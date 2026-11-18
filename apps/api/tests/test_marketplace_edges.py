@@ -29,7 +29,7 @@ def test_multi_seller_totals_private_groups_and_cancellation_once(client,actors)
 
 def test_stale_quote_conflicting_key_owner_and_order_transition(client,actors):
     f,_,c,_,other,_=actors;p=product(client,f);a=address(client,c);cart(client,c,p['id'],'2');quote=client.get(API+'/market/cart',headers=c).json()
-    assert client.patch(API+'/market/products/'+p['id'],headers=other,json={'expected_version':p['version'],'name':'Stolen'}).status_code==404
+    assert client.patch(API+'/market/products/'+p['id'],headers=other,json={'expected_version':p['version'],'name':'Stolen'}).status_code==403
     assert client.patch(API+'/market/products/'+p['id'],headers=f,json={'expected_version':p['version'],'price_bdt':'50'}).status_code==200
     r=client.post(API+'/market/orders',headers={**c,'Idempotency-Key':'stale'},json={'address_id':a['id'],'quote_hash':quote['quote_hash'],'fulfillment':{p['id']:'pickup'}})
     assert r.status_code==409
@@ -57,7 +57,7 @@ def test_real_image_upload_content_owner_and_archive_history(client,actors):
     r=client.post(API+'/market/products/'+p['id']+'/images',headers=f,files={'image':('leaf.png',out.getvalue(),'image/png')});assert r.status_code==200,r.text
     url=r.json()['url'];image=client.get(url);assert image.status_code==200
     assert Image.open(io.BytesIO(image.content)).getpixel((0,0))==(255,255,255)
-    assert client.post(API+'/market/products/'+p['id']+'/images',headers=c,files={'image':('leaf.png',out.getvalue(),'image/png')}).status_code==404
+    assert client.post(API+'/market/products/'+p['id']+'/images',headers=c,files={'image':('leaf.png',out.getvalue(),'image/png')}).status_code==403
     assert client.post(API+'/market/products/'+p['id']+'/images',headers=f,files={'image':('bad.jpg',b'bad')}).status_code==415
 
 def test_expiry_releases_orders_and_no_bid_reserve_auction(client,actors,monkeypatch):

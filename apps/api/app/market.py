@@ -27,7 +27,7 @@ def get_product(db,id,user=None):
     if not p or not s.can_view(db,p,user):s.fail(404,'Product not found')
     return p
 def owner_product(db,id,user):
-    s.actor(db,user,['farmer','customer']);return s.owned(db,Product,id,user,'farmer_id')
+    s.actor(db,user,['farmer']);return s.owned(db,Product,id,user,'farmer_id')
 def get_auction(db,id,user=None):
     a=db.get(Auction,id)
     if not a:s.fail(404,'Auction not found')
@@ -108,7 +108,7 @@ def products(user:Maybe,q:str=Query(default='',max_length=150),category:str|None
 @router.post('/market/products')
 def create_product(body:ProductCreate,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['farmer','customer']);s.enabled(db);s.rate(db,u,'product.created');farm=validate_farm(db,body.farm_id,u);p=s.profile(db,u)
+        u=s.actor(db,user,['farmer']);s.enabled(db);s.rate(db,u,'product.created');farm=validate_farm(db,body.farm_id,u);p=s.profile(db,u)
         if body.status=='published' and s.policy(db)['require_verified_farmer'] and p.verification_status!='verified':s.fail(403,'Farmer verification is required before publishing')
         data=body.model_dump();data['harvest_date']=body.harvest_date.isoformat() if body.harvest_date else None;data['available_from']=body.available_from.isoformat() if body.available_from else None
         lat=p.latitude;lon=p.longitude
@@ -269,7 +269,7 @@ def cancel_order(id:str,body:Reason,user:Who):
 @router.patch('/market/seller-orders/{id}')
 def fulfill(id:str,body:SellerUpdate,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['farmer','customer','admin']);s.tick(db);row=db.get(SellerOrder,id)
+        u=s.actor(db,user,['farmer','admin']);s.tick(db);row=db.get(SellerOrder,id)
         if not row or u.role!='admin' and row.farmer_id!=u.id:s.fail(404,'Seller order not found')
         if body.status=='cancelled':
             if not body.reason.strip():s.fail(422,'Supply a cancellation reason')
@@ -292,7 +292,7 @@ def reserve(db,a,p):
 @router.post('/market/auctions')
 def create_auction(body:AuctionCreate,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['farmer','customer']);s.enabled(db);s.tick(db);p=owner_product(db,body.product_id,u)
+        u=s.actor(db,user,['farmer']);s.enabled(db);s.tick(db);p=owner_product(db,body.product_id,u)
         if not s.listing_eligible(db,p):s.fail(422,'Publish an eligible fixed-price listing before adding an auction')
         if body.ends_at<=s.clock() or body.ends_at<=body.starts_at or body.ends_at-body.starts_at>timedelta(days=30):s.fail(422,'Auction must end in the future, after its start, within30days')
         if db.scalar(select(Auction.id).where(Auction.product_id==p.id,or_(Auction.state.in_(['draft','scheduled','live']), (Auction.state=='awarded') & Auction.reserved.is_(True)))):s.fail(409,'This product already has an active/draft auction')
@@ -302,13 +302,13 @@ def create_auction(body:AuctionCreate,user:Who):
 @router.post('/market/auctions/{id}/publish')
 def publish_auction(id:str,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['farmer','customer']);a=s.owned(db,Auction,id,user,'farmer_id');p=db.get(Product,a.product_id)
+        s.actor(db,user,['farmer']);a=s.owned(db,Auction,id,user,'farmer_id');p=db.get(Product,a.product_id)
         if a.state!='draft' or a.ends_at<=s.stamp(s.clock()) or not s.listing_eligible(db,p):s.fail(409,'Draft auction cannot be activated')
         reserve(db,a,p);a.state='scheduled' if a.starts_at>s.stamp(s.clock()) else 'live';db.flush();s.audit(db,user,'auction.published','auction',id);return s.auction_view(db,a,user)
 @router.patch('/market/auctions/{id}')
 def edit_auction(id:str,body:AuctionCreate,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['farmer','customer']);a=s.owned(db,Auction,id,user,'farmer_id')
+        s.actor(db,user,['farmer']);a=s.owned(db,Auction,id,user,'farmer_id')
         if a.state!='draft' or body.product_id!=a.product_id:s.fail(409,'Only draft auction terms can be edited; its product cannot change')
         if body.ends_at<=s.clock() or body.ends_at<=body.starts_at:s.fail(422,'Invalid auction times')
         for k in ['lot_quantity','starting_bid_bdt','minimum_increment_bdt','reserve_price_bdt']:setattr(a,k,getattr(body,k))
@@ -327,7 +327,7 @@ def settle_auction(id:str,user:Who):
 @router.post('/market/auctions/{id}/cancel')
 def cancel_auction(id:str,body:Reason,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['farmer','customer','admin']);s.tick(db);a=db.get(Auction,id)
+        u=s.actor(db,user,['farmer','admin']);s.tick(db);a=db.get(Auction,id)
         if not a or u.role!='admin' and a.farmer_id!=u.id:s.fail(404,'Auction not found')
         if not a.reserved and a.state!='draft' or a.state not in ['draft','scheduled','live','awarded']:s.fail(409,'Auction can no longer be cancelled')
         if u.role!='admin' and db.scalar(select(Bid.id).where(Bid.auction_id==id).limit(1)):s.fail(409,'An auction with bids requires administrator review')
@@ -429,7 +429,7 @@ def seller_orders(db,u):
 @router.get('/market/farmer/dashboard')
 def farmer_dashboard(user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['farmer','customer']);s.tick(db);ps=list(db.scalars(select(Product).where(Product.farmer_id==u.id).order_by(Product.created_at.desc())))
+        u=s.actor(db,user,['farmer']);s.tick(db);ps=list(db.scalars(select(Product).where(Product.farmer_id==u.id).order_by(Product.created_at.desc())))
         os=seller_orders(db,u);au=list(db.scalars(select(Auction).where(Auction.farmer_id==u.id).order_by(Auction.created_at.desc())))
         sales=list(db.scalars(select(SellerOrder).where(SellerOrder.farmer_id==u.id)))
         return {'profile':s.profile_view(s.profile(db,u),u),'products':[s.product_view(db,p,u) for p in ps],'orders':os,'auctions':[s.auction_view(db,a,u) for a in au],

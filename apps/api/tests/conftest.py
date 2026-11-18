@@ -48,6 +48,8 @@ def configure_isolated_test_env() -> Path:
             api_dir=API_DIR,
         )
 
+    os.environ['ENABLE_LEGACY_PASSWORD_SIGNUP'] = '1'
+    os.environ['ENABLE_DEMO_LOGIN'] = '1'
     os.environ['DATABASE_URL'] = safe_url
     os.environ['IMAGE_STORAGE_PATH'] = str(run_dir / 'images')
     os.environ['MODEL_DIR'] = str(run_dir / 'no-model-default')

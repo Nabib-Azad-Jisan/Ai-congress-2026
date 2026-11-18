@@ -27,6 +27,9 @@ export type User = {
   name: string;
   role: 'farmer'|'customer'|'admin';
   email?: string|null;
+  phone?: string|null;
+  age?: number|null;
+  gender?: 'male'|'female'|null;
   is_active?: boolean;
   preferences: Preferences;
 };

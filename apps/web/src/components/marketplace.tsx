@@ -4,7 +4,7 @@ import {useRouter} from 'next/navigation';
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {ArrowRight,Leaf,MapPin,Search,ShoppingBasket,ShieldCheck,Store,Heart} from 'lucide-react';
-import {setSessionToken,request} from '@/lib/api';
+import {request} from '@/lib/api';
 import {useSession} from '@/lib/session';
 import type {Product,Auction,PageOf,MarketRole,SellerRating} from '@/lib/marketplace-types';
 import {MarketContext,useMarket,send,useMarketQuery,rows,cash,Field,Panel,DataState,Empty,ProductImage,ProductVideo,useIdempotency} from './marketplace-shared';
@@ -21,6 +21,7 @@ export function Marketplace({locale,path}:{locale:'en'|'bn';path:string}){
  const t=(en:string,bn:string)=>locale==='bn'?bn:en;const go=(route:string)=>router.push(`/${locale}/marketplace${route?'/'+route:''}`);
  async function perform(fn:()=>Promise<unknown>,success=t('Saved.','সংরক্ষিত।')){if(pending.current)return false;pending.current=true;const started=identity.current;setBusy(true);setError('');setNotice('');try{await fn();if(active.current&&identity.current===started){setNotice(success);await qc.invalidateQueries({queryKey:['market',started]});}return identity.current===started;}catch(e){if(active.current&&identity.current===started)setError((e as Error).message);return false;}finally{pending.current=false;if(active.current)setBusy(false);}}
  const member=role==='customer'||role==='farmer';
+ const seller=role==='farmer';
  const sub=path.replace(/^marketplace\/?/,'');
  const selling=sub==='seller';
  const shopping=(!sub&&!member)||['browse','cart','favorites','auctions'].includes(sub)||sub.startsWith('products/')||sub.startsWith('farmers/');
@@ -29,13 +30,13 @@ export function Marketplace({locale,path}:{locale:'en'|'bn';path:string}){
    <Link className="mk-wordmark" href={`/${locale}/marketplace`}><Leaf size={26}/>KrishiMarket</Link>
    <nav aria-label={t('Marketplace navigation','বাজার নেভিগেশন')}>
     <Link href={`/${locale}/marketplace/browse`}>{t('Buy','কিনুন')}</Link>
-    {member&&<Link href={`/${locale}/marketplace/seller`}>{t('Sell','বিক্রি করুন')}</Link>}
+    {seller&&<Link href={`/${locale}/marketplace/seller`}>{t('Sell','বিক্রি করুন')}</Link>}
     {shopping&&<Link href={`/${locale}/marketplace/auctions`}>{t('Auctions','নিলাম')}</Link>}
     {shopping&&member&&<>
      <Link href={`/${locale}/marketplace/cart`}><ShoppingBasket size={16}/>{t('Cart','ঝুড়ি')}</Link>
      <Link href={`/${locale}/marketplace/favorites`}>{t('Favorites','পছন্দ')}</Link>
     </>}
-    {selling&&member&&<Link href={`/${locale}/agrorescue`}>{t('Harvest planner','ফসলের পরিকল্পনা')}</Link>}
+    {selling&&seller&&<Link href={`/${locale}/agrorescue`}>{t('Harvest planner','ফসলের পরিকল্পনা')}</Link>}
     {role&&<>
      <Link href={`/${locale}/marketplace/orders`}>{t('Orders','অর্ডার')}</Link>
      <Link href={`/${locale}/marketplace/account`}>{t('Profile','প্রোফাইল')}</Link>
@@ -48,16 +49,16 @@ export function Marketplace({locale,path}:{locale:'en'|'bn';path:string}){
   </header>
   <div className="mk-demo"><ShieldCheck size={16}/>{t('Prototype marketplace · No online payments. Cash records are unverified seller reports.','নমুনা বাজার · অনলাইন পেমেন্ট নেই। নগদ রেকর্ড বিক্রেতার অযাচাইকৃত তথ্য।')}</div>
   {error&&<div className="mk-error" role="alert">{error}</div>}{notice&&<div className="mk-success" role="status">{notice}</div>}
-  {session.state==='checking'?<p role="status">{t('Checking your session…','সেশন যাচাই হচ্ছে…')}</p>:sub.startsWith('farmers/')?<FarmerProfile id={sub.split('/')[1]}/>:sub==='auctions'?<AuctionDiscovery/>:sub==='auth'?<MarketplaceAuth/>:sub==='logout'?<MarketplaceLogout/>:sub.startsWith('products/')?<ProductDetail id={sub.split('/')[1]}/>:sub==='cart'?member?<MarketplaceCart/>:<SignInRequired/>:sub==='orders'?role?<MarketplaceOrders/>:<SignInRequired/>:sub==='seller'?member?<MarketplaceSeller/>:<SignInRequired/>:sub==='admin'?role==='admin'?<MarketplaceAdmin/>:<SignInRequired/>:sub==='account'?role?<MarketplaceAccount/>:<SignInRequired/>:sub==='notifications'?role?<MarketplaceNotifications/>:<SignInRequired/>:sub==='favorites'?member?<Favorites/>:<SignInRequired/>:!sub&&member?<MarketplaceChoices/>:<Discovery/>}
+  {session.state==='checking'?<p role="status">{t('Checking your session…','সেশন যাচাই হচ্ছে…')}</p>:sub.startsWith('farmers/')?<FarmerProfile id={sub.split('/')[1]}/>:sub==='auctions'?<AuctionDiscovery/>:sub==='auth'?role==='admin'?<MarketplaceAdmin/>:<MarketplaceChoices/>:sub==='logout'?<MarketplaceLogout/>:sub.startsWith('products/')?<ProductDetail id={sub.split('/')[1]}/>:sub==='cart'?member?<MarketplaceCart/>:<SignInRequired/>:sub==='orders'?role?<MarketplaceOrders/>:<SignInRequired/>:sub==='seller'?seller?<MarketplaceSeller/>:role?<Panel title={t('Selling is for farmer accounts','বিক্রি করতে কৃষক অ্যাকাউন্ট লাগবে')}><Link href={`/${locale}/marketplace/browse`}>{t('Browse produce','পণ্য দেখুন')}</Link></Panel>:<SignInRequired/>:sub==='admin'?role==='admin'?<MarketplaceAdmin/>:<SignInRequired/>:sub==='account'?role?<MarketplaceAccount/>:<SignInRequired/>:sub==='notifications'?role?<MarketplaceNotifications/>:<SignInRequired/>:sub==='favorites'?member?<Favorites/>:<SignInRequired/>:!sub&&member?<MarketplaceChoices/>:<Discovery/>}
  <footer className="mk-photo-credits"><a href="/crops/credits.html" target="_blank" rel="noopener noreferrer">{t('Crop photo credits','ফসলের ছবির কৃতজ্ঞতা')}</a></footer></div></MarketContext.Provider>;
 }
 function SignInRequired(){const {t,go}=useMarket();return <Panel title={t('Your marketplace account','আপনার বাজার অ্যাকাউন্ট')}><p>{t('Sign in to continue.','চালিয়ে যেতে উপযুক্ত বাজার ভূমিকায় প্রবেশ করুন।')}</p><button className="mk-primary" onClick={()=>go('auth')}>{t('Sign in / Join','প্রবেশ / যোগ দিন')}</button></Panel>;}
 function MarketplaceChoices(){
- const {t,locale}=useMarket();
+ const {t,locale,role}=useMarket();
  return <Panel title={t('What would you like to do?','আপনি কী করতে চান?')}>
   <div className="mk-entry-actions">
    <Link className="mk-primary" href={`/${locale}/marketplace/browse`}>{t('Buy produce','পণ্য কিনুন')}</Link>
-   <Link className="mk-primary" href={`/${locale}/marketplace/seller`}>{t('Sell produce','পণ্য বিক্রি করুন')}</Link>
+   {role==='farmer'&&<Link className="mk-primary" href={`/${locale}/marketplace/seller`}>{t('Sell produce','পণ্য বিক্রি করুন')}</Link>}
   </div>
  </Panel>;
 }
@@ -69,10 +70,6 @@ function MarketplaceLogout(){
     {t('Sign out','বের হন')}
    </button>:<button className="mk-primary" onClick={()=>go('auth')}>{t('Sign in','প্রবেশ করুন')}</button>}
  </Panel>;
-}
-function MarketplaceAuth(){const {t,busy,perform,go}=useMarket();const {refreshSession}=useSession();const qc=useQueryClient();const [register,setRegister]=useState(false);
- async function submit(e:FormEvent<HTMLFormElement>){e.preventDefault();const f=new FormData(e.currentTarget);await perform(async()=>{const result=await send<{token:string;user:{role:MarketRole}}>('/auth/'+(register?'register':'login'),Object.fromEntries(f));setSessionToken(result.token);qc.clear();await refreshSession();go(result.user.role==='admin'?'admin':'');},t('Welcome to KrishiMarket.','কৃষিমার্কেটে স্বাগতম।'));}
- return <div className="mk-auth"><Panel title={register?t('Join the farm-to-home market','খামার থেকে ঘরের বাজারে যোগ দিন'):t('Sign in to KrishiMarket','কৃষিমার্কেটে প্রবেশ করুন')}><p>{t('Use the same account to buy and sell. Administrators sign in here too.','সব পণ্য দেখুন। কেনাবেচার জন্য অ্যাকাউন্ট খুলুন।')}</p><form onSubmit={submit}>{register&&<Field label={t('Full name','পুরো নাম')}><input name="name" required maxLength={100} autoComplete="name"/></Field>}<Field label={t('Email','ইমেইল')}><input name="email" type="email" required autoComplete="email"/></Field><Field label={t('Password','পাসওয়ার্ড')}><input name="password" type="password" required minLength={10} maxLength={128} autoComplete={register?'new-password':'current-password'}/></Field><button disabled={busy} className="mk-primary">{register?t('Create account','অ্যাকাউন্ট খুলুন'):t('Sign in','প্রবেশ করুন')}</button></form><button className="mk-text-button" onClick={()=>setRegister(!register)}>{register?t('Already registered? Sign in','অ্যাকাউন্ট আছে? প্রবেশ করুন'):t('New here? Create an account','নতুন? অ্যাকাউন্ট খুলুন')}</button></Panel></div>;
 }
 function Discovery(){const {t,locale}=useMarket();const [filter,setFilter]=useState('sort=nearby');const [offset,setOffset]=useState(0);const [gps,setGps]=useState('');const [locationError,setLocationError]=useState('');const form=useRef<HTMLFormElement>(null);
  const query=useMarketQuery<PageOf<Product>>(`/market/products?${filter}&offset=${offset}&limit=12&available=true`);const data=query.data;

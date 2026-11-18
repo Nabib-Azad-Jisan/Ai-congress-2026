@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import math
+import os
 import re
 import secrets
 import threading
@@ -82,21 +83,26 @@ class Registration(Credentials):
 
 class AuthLimiter:
     """Thread-safe, bounded per-process throttling; edge limits are needed across workers."""
-    def __init__(self):
+    def __init__(self, window=60, ip_limit=60, identity_limit=12, by_destination=False):
+        self.window = window
+        self.ip_limit = ip_limit
+        self.identity_limit = identity_limit
+        self.by_destination = by_destination
         self.entries = OrderedDict()
         self.lock = threading.Lock()
 
     def check(self, ip: str, email: str):
         current = time.monotonic()
-        keys = [(('ip', ip), 60), (('identity', ip, email), 12)]
+        identity = ('destination', email) if self.by_destination else ('identity', ip, email)
+        keys = [(('ip', ip), self.ip_limit), (identity, self.identity_limit)]
         with self.lock:
             for key, limit in keys:
                 bucket = self.entries.setdefault(key, deque())
-                while bucket and bucket[0] <= current - 60:
+                while bucket and bucket[0] <= current - self.window:
                     bucket.popleft()
                 self.entries.move_to_end(key)
                 if len(bucket) >= limit:
-                    raise HTTPException(429, 'Too many authentication attempts', headers={'Retry-After': str(max(1, math.ceil(60 - current + bucket[0])))})
+                    raise HTTPException(429, 'Too many authentication attempts', headers={'Retry-After': str(max(1, math.ceil(self.window - current + bucket[0])))})
             for key, _ in keys:
                 self.entries[key].append(current)
             while len(self.entries) > 4096:
@@ -123,6 +129,8 @@ def issue_session(db: Session, user: User) -> dict:
 
 @router.post('/register')
 def register(body: Registration, request: Request, db: Session = Depends(get_db)):
+    if os.getenv('ENABLE_LEGACY_PASSWORD_SIGNUP') != '1':
+        raise HTTPException(410, 'Create your account with a verification code')
     limit_auth(request, body.email)
     if db.scalar(select(User.id).where(User.email == body.email)):
         raise HTTPException(409, 'An account already uses this email')

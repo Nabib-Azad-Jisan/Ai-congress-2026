@@ -6617,6 +6617,186 @@
           }
         }
       }
+    },
+    "/api/v1/auth/options": {
+      "get": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Auth Options",
+        "operationId": "auth_options_api_v1_auth_options_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/otp/start": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Start",
+        "operationId": "start_api_v1_auth_otp_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Start"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/otp/verify": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Verify",
+        "operationId": "verify_api_v1_auth_otp_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Verify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Password Login",
+        "operationId": "password_login_api_v1_auth_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactPassword"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/signup-photo": {
+      "get": {
+        "summary": "Signup Photo",
+        "operationId": "signup_photo_api_v1_me_signup_photo_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -9267,6 +9447,198 @@
           "video"
         ],
         "title": "Body_add_video_api_v1_market_products__id__videos_post"
+      },
+      "Start": {
+        "properties": {
+          "contact": {
+            "type": "string",
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Contact"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "login",
+              "signup"
+            ],
+            "title": "Purpose"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "contact",
+          "purpose"
+        ],
+        "title": "Start"
+      },
+      "Verify": {
+        "properties": {
+          "contact": {
+            "type": "string",
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Contact"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "login",
+              "signup"
+            ],
+            "title": "Purpose"
+          },
+          "verification_id": {
+            "type": "string",
+            "pattern": "^VE[a-fA-F0-9]{32}$",
+            "title": "Verification Id"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{4,10}$",
+            "title": "Code"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "contact",
+          "purpose",
+          "verification_id",
+          "code"
+        ],
+        "title": "Verify"
+      },
+      "ProfileInput": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "age": {
+            "type": "integer",
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Age"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "farmer",
+              "customer"
+            ],
+            "title": "Role"
+          },
+          "national_id": {
+            "type": "string",
+            "format": "password",
+            "title": "National Id",
+            "writeOnly": true
+          },
+          "permanent_address": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 5,
+            "title": "Permanent Address"
+          },
+          "present_address": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 5,
+            "title": "Present Address"
+          },
+          "ward_number": {
+            "type": "string",
+            "pattern": "^[0-9]{1,4}$",
+            "title": "Ward Number"
+          },
+          "gender": {
+            "type": "string",
+            "enum": [
+              "male",
+              "female"
+            ],
+            "title": "Gender"
+          },
+          "photo_base64": {
+            "type": "string",
+            "maxLength": 1398104,
+            "minLength": 4,
+            "format": "password",
+            "title": "Photo Base64",
+            "writeOnly": true
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 10,
+            "format": "password",
+            "title": "Password",
+            "writeOnly": true
+          },
+          "confirm_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 10,
+            "format": "password",
+            "title": "Confirm Password",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "age",
+          "role",
+          "national_id",
+          "permanent_address",
+          "present_address",
+          "ward_number",
+          "gender",
+          "photo_base64",
+          "password",
+          "confirm_password"
+        ],
+        "title": "ProfileInput"
+      },
+      "ContactPassword": {
+        "properties": {
+          "contact": {
+            "type": "string",
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Contact"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "format": "password",
+            "title": "Password",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "contact",
+          "password"
+        ],
+        "title": "ContactPassword"
       }
     },
     "securitySchemes": {

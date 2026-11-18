@@ -50,7 +50,7 @@ def test_direct_purchase_without_bid_and_replay(client,actors):
     assert client.get(API+'/market/products/'+p['id']).json()['stock_quantity']=='97.000'
     assert client.get(API+'/market/orders/'+order['id'],headers=other).status_code==404
     so=order['seller_orders'][0]
-    assert client.patch(API+'/market/seller-orders/'+so['id'],headers=customer,json={'status':'delivered'}).status_code==404
+    assert client.patch(API+'/market/seller-orders/'+so['id'],headers=customer,json={'status':'delivered'}).status_code==403
     for state in ['confirmed','preparing','out_for_delivery','delivered']:
         r=client.patch(API+'/market/seller-orders/'+so['id'],headers=farmer,json={'status':state});assert r.status_code==200,r.text
 
@@ -124,16 +124,17 @@ def test_simultaneous_orders_cannot_oversell(client,actors):
     assert Decimal(client.get(API+'/market/products/'+p['id']).json()['stock_quantity'])==1
 
 def test_same_market_account_can_buy_and_sell(client, actors):
-    farmer,_,customer,_,_,_=actors
-    offered = product(client, customer)
+    farmer,_,_,_,_,_=actors
+    seller,_=account(client,'farmer','second-selling-farmer')
+    offered = product(client, seller)
     own_listing = product(client, farmer)
     assert cart(client, farmer, own_listing['id'], '1').status_code == 403
     assert cart(client, farmer, offered['id'], '2').status_code == 200
     order = checkout(client, farmer, address(client, farmer), offered['id'], method='pickup')
     assert order.status_code == 200, order.text
     sale = order.json()['seller_orders'][0]
-    assert client.patch(API+'/market/seller-orders/'+sale['id'], headers=customer, json={'status':'confirmed'}).status_code == 200
-    for headers in (farmer, customer):
+    assert client.patch(API+'/market/seller-orders/'+sale['id'], headers=seller, json={'status':'confirmed'}).status_code == 200
+    for headers in (farmer, seller):
         orders = client.get(API+'/market/orders', headers=headers).json()['items']
         assert any(item['id'] == order.json()['id'] for item in orders)
 
@@ -141,7 +142,8 @@ def test_verified_product_reviews_rank_the_whole_seller(client, actors):
     seller,_,buyer,_,other,_=actors
     chosen=product(client,seller,name='Zulu review listing')
     sibling=product(client,seller,name='Zulu other listing')
-    product(client,other,name='Alpha no reviews')
+    unrated_seller,_=account(client,'farmer','unrated-seller')
+    product(client,unrated_seller,name='Alpha no reviews')
     receiver=address(client,buyer)
     assert cart(client,buyer,chosen['id'],'1').status_code==200
     order=checkout(client,buyer,receiver,chosen['id'],method='pickup').json()

@@ -1,7 +1,7 @@
 """Owner exports and account erasure without destroying commerce audit history."""
 from pathlib import Path
 from sqlalchemy import delete,func,or_,select
-from .db import Reading,Record,Token,User
+from .db import Reading,Record,SignupIdentity,Token,User
 from .market_models import Address,Auction,Audit,Bid,CartItem,Favorite,Idempotency,Notification,Order,Product,ProductImage,Profile,Report,SellerOrder
 from . import market_service as s
 
@@ -44,7 +44,8 @@ def erase_account(user,storage:Path):
         for p in db.scalars(select(Product).where(Product.farm_id.in_(farms))):p.farm_id=None
         for so in db.scalars(select(SellerOrder).where(SellerOrder.farm_id.in_(farms))):so.farm_id=None
         db.execute(delete(Record).where(Record.owner_id==u.id));db.execute(delete(Token).where(Token.user_id==u.id))
-        u.name='Deleted account';u.email=None;u.password_hash=None;u.preferences={};u.is_active=False
+        db.execute(delete(SignupIdentity).where(SignupIdentity.user_id==u.id))
+        u.name='Deleted account';u.email=None;u.phone=None;u.age=None;u.password_hash=None;u.preferences={};u.is_active=False
         s.audit(db,None,'account.erased','user',u.id)
     for path in files:path.unlink(missing_ok=True)
     return {'ok':True,'notice':'Profile/contact data removed. Closed order and immutable bid/audit history retain an anonymous identifier.'}

@@ -20,6 +20,8 @@ from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
@@ -31,9 +33,10 @@ from sqlalchemy.orm import Session as DBSession
 from .identity import require_user, user_view
 from .market_privacy import owner_export as market_owner_export, erase_account as erase_market_account
 from .market_auth import router as auth_router, AuthLimiter
+from .otp_auth import router as otp_router, demo_login_enabled, open_identity
 from .rescue import router as rescue_router
 from . import market_models, market_service
-from .db import Base, Reading, Record, Token, User, engine, ensure_compat_schema, get_db, now
+from .db import Base, Reading, Record, SignupIdentity, Token, User, engine, ensure_compat_schema, get_db, now
 from .doctor_models import CROPS, DoctorRegistry, normalize_crop
 from .schemas import (
     ActionUpdate,
@@ -156,6 +159,15 @@ def current_user(db: Db, authorization: Annotated[str | None, Header()] = None) 
 
 
 Who = Annotated[User, Depends(current_user)]
+
+
+def farmer_user(user: Who) -> User:
+    if user.role != 'farmer':
+        raise HTTPException(403, 'AgroDoctor screening is available to farmer accounts')
+    return user
+
+
+Farmer = Annotated[User, Depends(farmer_user)]
 
 
 def records(db: DBSession, user: User, kind: str, plot: str | None = None) -> list[Record]:
@@ -470,6 +482,8 @@ app.openapi = custom_openapi
 
 @app.post('/api/v1/auth/demo')
 def login(body: DemoLogin, db: Db):
+    if not demo_login_enabled():
+        raise HTTPException(404, 'Demo sign-in is disabled')
     user = User(
         name=body.name,
         preferences={'language': 'en', 'theme': 'light', 'retraining_consent': False, 'selected_plot_id': None},
@@ -583,9 +597,31 @@ def ready(request: Request, db: Db):
     return JSONResponse(result, status_code=200 if status=='ready' else 503)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, error: RequestValidationError):
+    if request.url.path in {'/api/v1/auth/otp/start', '/api/v1/auth/otp/verify', '/api/v1/auth/password'}:
+        first = error.errors()[0]
+        field = first['loc'][-1]
+        return JSONResponse(status_code=422, content={'message': f"{field}: {first['msg']}"},
+                            headers={'Cache-Control': 'no-store'})
+    return await request_validation_exception_handler(request, error)
+
+
 @app.get('/api/v1/me')
-def me(user: Who):
-    return {**user_view(user), 'preferences':_prefs(user)}
+def me(user: Who, db: Db):
+    identity = db.get(SignupIdentity, user.id)
+    return {**user_view(user), 'phone':user.phone, 'age':user.age,
+            'gender':identity.gender if identity else None, 'preferences':_prefs(user)}
+
+
+@app.get('/api/v1/me/signup-photo')
+def signup_photo(user: Who, db: Db):
+    identity = db.get(SignupIdentity, user.id)
+    if not identity:
+        raise HTTPException(404, 'No signup photo is available')
+    return Response(open_identity(identity.encrypted_photo), media_type='image/jpeg',
+                    headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+
 
 
 @app.patch('/api/v1/me')
@@ -800,7 +836,7 @@ def limit_screening_preview(user_id: str) -> None:
 
 @app.post('/api/v1/doctor/cases')
 def upload(
-    user: Who,
+    user: Farmer,
     db: Db,
     image: Annotated[UploadFile, File()],
     plot_id: Annotated[str | None, Form()] = None,
@@ -887,7 +923,7 @@ def _case_feedback(db: DBSession, user: User, case_id: str, plot_id: str | None)
 
 @app.get('/api/v1/doctor/cases')
 def cases(
-    user: Who,
+    user: Farmer,
     db: Db,
     offset: int = 0,
     limit: int = 20,
@@ -913,7 +949,7 @@ def cases(
 
 
 @app.get('/api/v1/doctor/cases/{id}')
-def case(id: str, user: Who, db: Db):
+def case(id: str, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     data = _case_view(c)
     data['feedback'] = _case_feedback(db, user, id, c.plot_id)
@@ -921,13 +957,13 @@ def case(id: str, user: Who, db: Db):
 
 
 @app.get('/api/v1/doctor/cases/{id}/feedback')
-def list_feedback(id: str, user: Who, db: Db):
+def list_feedback(id: str, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     return _case_feedback(db, user, id, c.plot_id)
 
 
 @app.get('/api/v1/doctor/cases/{id}/image')
-def case_image(id: str, user: Who, db: Db):
+def case_image(id: str, user: Farmer, db: Db):
     filename = owned(db, user, id, 'case').payload.get('image_file')
     image_path = storage / Path(filename).name if filename else None
     if not image_path or not image_path.is_file():
@@ -939,7 +975,7 @@ def case_image(id: str, user: Who, db: Db):
 
 
 @app.post('/api/v1/doctor/cases/{id}/feedback')
-def feedback(id: str, body: FeedbackInput, user: Who, db: Db):
+def feedback(id: str, body: FeedbackInput, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     r = add(
         db,
@@ -955,7 +991,7 @@ def feedback(id: str, body: FeedbackInput, user: Who, db: Db):
 
 
 @app.get('/api/v1/doctor/cases/{id}/report')
-def report(id: str, user: Who, db: Db):
+def report(id: str, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     out = io.StringIO()
     writer = csv.writer(out)
@@ -979,7 +1015,7 @@ def report(id: str, user: Who, db: Db):
 
 
 @app.delete('/api/v1/doctor/cases/{id}')
-def delete_case(id: str, user: Who, db: Db):
+def delete_case(id: str, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     plot_id = c.plot_id
     _delete_case_artifacts(db, user, c)
@@ -1663,7 +1699,10 @@ def evaluations(crop: str = 'tomato'):
 
 
 @app.get('/api/v1/me/export')
-def export(user: Who, db: Db):
+def export(user: Who, db: Db, response: Response):
+    response.headers['Cache-Control'] = 'private, no-store'
+    identity = db.get(SignupIdentity, user.id)
+    signup_details = (json.loads(open_identity(identity.encrypted_details)) | {'gender':identity.gender}) if identity else None
     all_records = list(db.scalars(select(Record).where(Record.owner_id == user.id)))
     exported = []
     counts: dict[str, int] = {}
@@ -1710,7 +1749,8 @@ def export(user: Who, db: Db):
         'timezone': 'UTC',
         'contains_image_binaries': False,
         'image_export_note': 'Private case images are available through authorized per-case download endpoints, not this JSON export.',
-        'user': {'id': user.id, 'name': user.name, 'role': user.role, 'preferences': _prefs(user)},
+        'user': {'id': user.id, 'name': user.name, 'role': user.role, 'email': user.email, 'phone': user.phone, 'age': user.age, 'preferences': _prefs(user)},
+        'private_signup_details': signup_details,
         'marketplace': market_owner_export(user),
         'records_by_kind': counts,
         'records': exported,
@@ -1728,6 +1768,7 @@ def delete_account(user: Who, db: Db):
     return erase_market_account(user, storage)
 
 app.include_router(auth_router)
+app.include_router(otp_router)
 
 from .market import router as market_router
 app.include_router(market_router)

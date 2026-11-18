@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import JSON, Boolean, ForeignKey, String, UniqueConstraint, create_engine, inspect, text, event
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, LargeBinary, String, UniqueConstraint, create_engine, inspect, text, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -23,10 +23,21 @@ class User(Base):
     name: Mapped[str] = mapped_column(String)
     preferences: Mapped[dict] = mapped_column(JSON, default=dict)
     email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default='farmer', server_default='farmer')
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
-    __table_args__ = (UniqueConstraint('email', name='uq_users_email'),)
+    __table_args__ = (UniqueConstraint('email', name='uq_users_email'), UniqueConstraint('phone', name='uq_users_phone'))
+
+
+class SignupIdentity(Base):
+    __tablename__ = 'signup_identities'
+
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    gender: Mapped[str] = mapped_column(String(6))
+    encrypted_details: Mapped[bytes] = mapped_column(LargeBinary)
+    encrypted_photo: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class Token(Base):
@@ -62,6 +73,22 @@ class Reading(Base):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+def ensure_otp_schema(connection) -> None:
+    inspector = inspect(connection)
+    columns = {column['name'] for column in inspector.get_columns('users')}
+    for name, declaration in [('phone', 'VARCHAR(16)'), ('age', 'INTEGER')]:
+        if name not in columns:
+            connection.execute(text(f'ALTER TABLE users ADD COLUMN {name} {declaration}'))
+    unique_phone = any(constraint['column_names'] == ['phone'] for constraint in inspector.get_unique_constraints('users'))
+    if not unique_phone:
+        connection.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_users_phone ON users (phone)'))
+    if inspector.has_table('market_products'):
+        connection.execute(text(
+            "UPDATE users SET role='farmer' WHERE role='customer' AND EXISTS "
+            "(SELECT 1 FROM market_products WHERE market_products.farmer_id=users.id)"
+        ))
+
+
 def ensure_compat_schema(target_engine) -> None:
     """Create tables and add legacy lifecycle/identity columns without resetting data."""
     Base.metadata.create_all(target_engine)
@@ -83,6 +110,8 @@ def ensure_compat_schema(target_engine) -> None:
             indexes = insp.get_indexes('users')
             if {'email'} not in unique_sets and not any(i.get('unique') and i['column_names'] == ['email'] for i in indexes):
                 conn.execute(text('CREATE UNIQUE INDEX uq_users_email ON users (email)'))
+        with target_engine.begin() as conn:
+            ensure_otp_schema(conn)
     if 'records' in table_names:
         rec_cols = {c['name'] for c in insp.get_columns('records')}
         missing_rec = [

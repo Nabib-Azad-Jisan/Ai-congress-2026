@@ -1,3 +1,18 @@
+# Account sign-in and registration — 19 November 2026
+
+New signup also collects a national ID number, present and permanent addresses, ward, gender, a portrait photo, and a confirmed password. Government ID numbers are checked for format. OTP verifies the phone or email. The service does not query a government identity registry. Passwords are hashed. The ID, addresses, ward, and re-encoded photo are encrypted before their database writes. Account exports and photo access are restricted to the signed-in owner, and account erasure removes the private signup record.
+
+Set a stable Fernet key as `SIGNUP_DATA_KEY` in the API service environment before enabling signup. Generate one using `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` in a private terminal and store the output as a secret. Retain the key securely across deployments so existing signup records can still be read. New accounts can use password or OTP sign-in. The signup update passed 130 API tests, 74 frontend unit tests, a production build, and the focused signup and greeting browser test.
+
+
+The locale home opens with sign-in. New accounts verify a phone number or email and supply a name, age, and role. Farmer accounts can sell, buy, and use AgroDoctor. Customer accounts can buy and use shared features. Existing sellers with listings are carried forward as farmers when the new account schema is applied. Existing password accounts and provisioned admins continue to sign in through the password option.
+
+The Bangladesh mobile field supplies the prefix +880 and requires exactly ten remaining digits starting with 1. The API normalizes 11-digit local numbers beginning with 01 to that format. Email sign-in is also available.
+
+Real OTP delivery requires a configured Twilio Verify service. SMS routes through Twilio Verify and email requires its SendGrid integration. Set `TWILIO_VERIFY_SERVICE_SID`, `TWILIO_API_KEY_SID`, and `TWILIO_API_KEY_SECRET` on the FastAPI service. On Render, set these in the API service's Environment settings and redeploy the API. Configure SMS for the destination countries and an authenticated SendGrid sender for email. Keep these values out of Netlify and GitHub. Runtime demo sign-in defaults to enabled locally and disabled on the hosted service. Legacy password registration is disabled by default and remains available to browser/automation fixtures via `ENABLE_LEGACY_PASSWORD_SIGNUP=1` in an isolated environment.
+
+Verification passed locally with 129 API tests, 74 frontend unit tests, a production build, and all 30 browser tests. OTP flows used a simulated provider for verification. Live delivery is pending provider credentials.
+
 # Crop-first AgroDoctor screening — 18 November 2026
 
 AgroDoctor can screen a leaf photo after the user selects any of the 12 catalog crops. With a matching selected plot, the app saves the observation and adds it to plot history. Otherwise, the app shows a preview without writing a photo, case, or action. The API returns a validation error for corrupt photos, including PNG checksum failures.

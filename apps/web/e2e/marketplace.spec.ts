@@ -15,28 +15,69 @@ async function signIn(page: Page, token:string) {
   await page.reload();
   await expect(page.getByRole('link',{name:'Buy produce',exact:true})).toBeVisible();
 }
-test('one marketplace account can choose buy or sell and sign out',async({page})=>{
-  await page.goto('/en/marketplace/auth');
-  await page.getByRole('button',{name:'New here? Create an account',exact:true}).click();
-  await page.getByLabel('Full name').fill('Market member');
-  const email=`member-${Date.now()}@example.test`;
-  await page.getByLabel('Email').fill(email);
-  await page.getByLabel('Password').fill('correct horse battery');
-  await page.getByRole('button',{name:'Create account',exact:true}).click();
-  await expect(page.getByRole('link',{name:'Buy produce',exact:true})).toBeVisible({timeout:15000});
-  await page.getByRole('link',{name:'Sell produce',exact:true}).click();
-  await expect(page.getByRole('button',{name:'New listing',exact:true})).toBeVisible();
-  await page.getByRole('link',{name:'Buy',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'Fresh from the farm.'})).toBeVisible();
-  await page.getByRole('link',{name:'Sign out',exact:true}).click();
-  await page.getByRole('main').getByRole('button',{name:'Sign out',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'You’re signed out'})).toBeVisible();
-  await page.getByRole('button',{name:'Sign in',exact:true}).click();
-  await page.getByLabel('Email').fill(email);
-  await page.getByLabel('Password').fill('correct horse battery');
-  await page.getByRole('button',{name:'Sign in',exact:true}).click();
-  await expect(page.getByRole('link',{name:'Sell produce',exact:true})).toBeVisible({timeout:15000});
+test('OTP registration opens the farmer workspace and customer selling stays restricted',async({page,request})=>{
+  const farmer=await account(request,'farmer');
+  const customer=await account(request,'customer');
+  const sid='VE'+ 'f'.repeat(32);
+  const photo='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const details={
+    national_id:'1234567890',gender:'male',permanent_address:'Test permanent address',
+    present_address:'Test present address',ward_number:'12',photo_base64:photo,
+    password:'correct horse battery',confirm_password:'correct horse battery',
+  };
+  await page.route('**/auth/options', route=>route.fulfill({json:{otp:true,demo:false,signup:true}}));
+  await page.route('**/auth/otp/start',async route=>{
+    expect(route.request().postDataJSON()).toEqual({contact:'+8801712345678',purpose:'signup'});
+    await route.fulfill({json:{verification_id:sid}});
+  });
+  await page.route('**/auth/otp/verify',async route=>{
+    expect(route.request().postDataJSON()).toEqual({
+      contact:'+8801712345678',purpose:'signup',verification_id:sid,code:'123456',
+      profile:{name:'Market farmer',age:28,role:'farmer',...details},
+    });
+    await route.fulfill({json:{token:farmer.token,user:{role:'farmer'}}});
+  });
+  await page.route('**/api/v1/me',async route=>{
+    const response=await route.fetch();
+    const user=await response.json();
+    await route.fulfill({response,json:user.name==='Market farmer'?{...user,gender:'male'}:user});
+  });
+  await page.goto('/en');
+  await expect(page.getByRole('heading',{name:'Sign in to AgroSphere'})).toBeVisible();
+  await page.getByRole('button',{name:'Sign up',exact:true}).click();
+  await page.getByLabel('Full name').fill('Market farmer');
+  await page.getByLabel('Age in years').fill('28');
+  await page.getByLabel('Account type').selectOption('farmer');
+  await page.getByLabel('Bangladesh national ID number').fill(details.national_id);
+  await page.getByLabel('Gender').selectOption('male');
+  await page.getByLabel('Permanent address').fill(details.permanent_address);
+  await page.getByLabel('Present address').fill(details.present_address);
+  await page.getByLabel('Ward number').fill(details.ward_number);
+  await page.getByLabel('Passport-size photo').setInputFiles({name:'portrait.png',mimeType:'image/png',buffer:Buffer.from(photo,'base64')});
+  await page.getByLabel('Set password').fill(details.password);
+  await page.getByLabel('Confirm password').fill(details.confirm_password);
+  const mobile = page.getByRole('textbox',{name:/Mobile number/});
+  for (const invalid of ['171234567','17123456789','0712345678']) {
+    await mobile.fill(invalid);
+    expect(await mobile.evaluate((input: HTMLInputElement)=>input.validity.patternMismatch)).toBe(true);
+  }
+  await mobile.fill('1712345678');
+  expect(await mobile.evaluate((input: HTMLInputElement)=>input.validity.valid)).toBe(true);
+  await page.getByRole('button',{name:'Send verification code'}).click();
+  await page.getByLabel('Verification code').fill('123456');
+  await page.getByRole('button',{name:'Verify and continue'}).click();
+  await expect(page.locator('#sidebar').getByRole('link',{name:/AgroDoctor/})).toBeVisible();
+  await expect(page.getByText('Hello, Mr. Market farmer',{exact:true})).toBeVisible();
+  await signIn(page,farmer.token);
+  await expect(page.getByRole('link',{name:'Sell produce',exact:true})).toBeVisible();
+  await signIn(page,customer.token);
+  await expect(page.getByRole('link',{name:'Sell produce',exact:true})).toHaveCount(0);
+  await page.goto('/en/marketplace/seller');
+  await expect(page.getByRole('heading',{name:'Selling is for farmer accounts'})).toBeVisible();
+  await page.goto('/en/agrodoctor');
+  await expect(page.getByRole('heading',{name:'AgroDoctor is for farmer accounts'})).toBeVisible();
 });
+
 test('public marketplace is usable in English and Bengali without location permission',async({page})=>{
   const catalog=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/v1/market/products'&&r.ok());
   await page.goto('/en/marketplace');

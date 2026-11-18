@@ -12,7 +12,7 @@ In Sell, choose New listing and attach an optional photo and video before saving
 
 ## Sign in and choose Buy or Sell
 
-Customers and farmers use the same sign-in and can buy and sell from the same account. The marketplace home offers **Buy produce** and **Sell produce** after sign-in. New registration uses one member account form. Existing customer and farmer accounts retain their credentials and data. Administrators use the same sign-in page and are directed to Administration. Admin accounts are provisioned by an operator. **Sign out** opens a confirmation page.
+Customers and farmers use the shared phone or email OTP screen. Farmer accounts can choose Buy or Sell and use AgroDoctor. Customer accounts can buy through the Marketplace and manage orders, reviews, and profile information. Existing customer accounts with sales listings are carried forward as farmers. Admin accounts are provisioned by an operator and use the password option, which also remains available to existing password accounts. **Sign out** opens a confirmation page.
 
 
 Implemented 17 November 2026 as an extension of the existing Next.js/FastAPI/SQLAlchemy application. The request source is retained in docs/superpowers/specs/2026-11-17-krishimarket-marketplace-requirements.md. Existing AgroDoctor/FloodCrop/market-intelligence code and records remain part of the same application.
@@ -29,7 +29,7 @@ The current demo uses this chat's isolated work/multicrop-demo.db and work/multi
 
 ## Roles and authentication
 
-Public signup accepts only farmer/customer. Passwords use salted scrypt; session tokens are random and stored as SHA256 digests. Every protected marketplace mutation checks current database role/activity and ownership. Suspension invalidates sessions. The last active admin cannot suspend or erase itself. Login/signup have bounded per-process rate limiting; shared proxy/edge limiting is required for a distributed production deployment.
+Public signup requires a verified phone or email and accepts only farmer/customer. Legacy password signup is off by default. Passwords use salted scrypt; session tokens are random and stored as SHA256 digests. Every protected marketplace mutation checks current database role/activity and ownership. Suspension invalidates sessions. The last active admin cannot suspend or erase itself. Login/signup have bounded per-process rate limiting; shared proxy/edge limiting is required for a distributed production deployment.
 
 Existing demo accounts retain farmer access. New regular accounts do not inherit another user's farms, orders or addresses. Role-sensitive queries are keyed by account identity; session initialization preserves public catalog loading, and stale identity responses are discarded.
 

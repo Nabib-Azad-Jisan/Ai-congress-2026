@@ -9,3 +9,4 @@ python-multipart==0.0.34
 SQLAlchemy==2.1.8
 uvicorn[standard]==0.54.0
 pytest==9.2.0
+cryptography==49.0.0
