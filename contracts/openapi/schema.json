@@ -3488,7 +3488,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(nearby|nearest|price|price_desc|newest)$",
+              "pattern": "^(nearby|nearest|price|price_desc|newest|top_rated)$",
               "default": "nearby",
               "title": "Sort"
             }
@@ -3745,7 +3745,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(nearby|nearest|price|price_desc|newest)$",
+              "pattern": "^(nearby|nearest|price|price_desc|newest|top_rated)$",
               "default": "nearby",
               "title": "Sort"
             }

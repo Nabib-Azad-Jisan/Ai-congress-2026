@@ -136,3 +136,26 @@ def test_same_market_account_can_buy_and_sell(client, actors):
     for headers in (farmer, customer):
         orders = client.get(API+'/market/orders', headers=headers).json()['items']
         assert any(item['id'] == order.json()['id'] for item in orders)
+
+def test_verified_product_reviews_rank_the_whole_seller(client, actors):
+    seller,_,buyer,_,other,_=actors
+    chosen=product(client,seller,name='Zulu review listing')
+    sibling=product(client,seller,name='Zulu other listing')
+    product(client,other,name='Alpha no reviews')
+    receiver=address(client,buyer)
+    assert cart(client,buyer,chosen['id'],'1').status_code==200
+    order=checkout(client,buyer,receiver,chosen['id'],method='pickup').json()
+    group=order['seller_orders'][0]
+    assert group['delivery_fee_bdt']=='0.00'
+    body={'seller_order_id':group['id'],'product_id':chosen['id'],'rating':5,'comment':'Fresh produce'}
+    assert client.post(API+'/market/reviews',headers=buyer,json=body).status_code==422
+    for state in ['confirmed','preparing','ready_for_pickup','delivered']:
+        assert client.patch(API+'/market/seller-orders/'+group['id'],headers=seller,json={'status':state}).status_code==200
+    assert client.post(API+'/market/reviews',headers=other,json=body).status_code==404
+    assert client.post(API+'/market/reviews',headers=buyer,json=body).status_code==200
+    assert client.post(API+'/market/reviews',headers=buyer,json=body).status_code==409
+    items=client.get(API+'/market/products?sort=top_rated').json()['items']
+    assert {item['id'] for item in items[:2]}=={chosen['id'],sibling['id']}
+    assert all(item['seller_rating']=={'average':5.0,'count':1} for item in items[:2])
+    result=client.get(API+'/market/orders/'+order['id'],headers=buyer).json()
+    assert result['seller_orders'][0]['items'][0]['review_rating']==5

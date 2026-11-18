@@ -90,12 +90,28 @@ def idempotent(db,user,operation,key,body,run):
         return row.response
     result=run();db.flush();db.add(Idempotency(user_id=user.id,operation=operation,key=key,fingerprint=digest,response=result));return result
 
-def product_view(db,p,user=None,lat=None,lon=None,include_auction=True):
+def seller_ratings(db, seller_ids):
+    if not seller_ids:
+        return {}
+    rows = db.execute(
+        select(SellerOrder.farmer_id, func.sum(Review.rating), func.count(Review.id))
+        .join(Review, Review.seller_order_id == SellerOrder.id)
+        .where(SellerOrder.farmer_id.in_(seller_ids), SellerOrder.status == 'delivered')
+        .group_by(SellerOrder.farmer_id)
+    )
+    return {seller_id: {'average': float(Decimal(total) / count), 'count': count}
+            for seller_id, total, count in rows}
+
+
+def product_view(db,p,user=None,lat=None,lon=None,include_auction=True,ratings=None):
     seller=db.get(User,p.farmer_id);pr=db.get(Profile,p.farmer_id)
     images=list(db.scalars(select(ProductImage).where(ProductImage.product_id==p.id).order_by(ProductImage.created_at)))
     distance=distance_km(lat,lon,p.latitude,p.longitude) if lat is not None and lon is not None and p.latitude is not None and p.longitude is not None else None
     data={k:getattr(p,k) for k in ['id','farmer_id','farm_id','name','description','category','unit','district','area','pickup_enabled','delivery_enabled','nationwide_delivery','delivery_districts','harvest_date','available_from','moderation_status','version','created_at','updated_at']}
     data.update(seller_name=pr.public_name if pr else seller.name if seller else 'Archived farmer',seller_verification=pr.verification_status if pr else 'unverified',price_bdt=m(p.price_bdt),currency='BDT',quantity_step=q(p.quantity_step),stock_quantity=q(p.stock_quantity),auction_reserved=q(p.auction_reserved),minimum_order_quantity=q(p.minimum_order_quantity) if p.minimum_order_quantity is not None else None,maximum_order_quantity=q(p.maximum_order_quantity) if p.maximum_order_quantity is not None else None,delivery_fee_bdt=m(p.delivery_fee_bdt),status='out_of_stock' if p.status=='published' and p.stock_quantity==0 else p.status,images=[{'id':i.id,'url':f'/api/v1/market/products/{p.id}/images/{i.id}'} for i in images if i.filename.endswith('.jpg')],videos=[{'id':i.id,'url':f'/api/v1/market/products/{p.id}/images/{i.id}'} for i in images if i.filename.endswith(('.mp4','.webm'))],distance_km=round(distance,1) if distance is not None else None,nearby=distance<=20 if distance is not None else False,distance_notice='Approximate geographic distance to a coarse farm location; not road distance or delivery eligibility.',available=listing_eligible(db,p) and p.stock_quantity>0)
+    if ratings is None:
+        ratings=seller_ratings(db,[p.farmer_id])
+    data['seller_rating']=ratings.get(p.farmer_id)
     if user and (user.id==p.farmer_id or user.role=='admin'):data['pickup_instructions']=p.pickup_instructions
     if include_auction:
         a=db.scalar(select(Auction).where(Auction.product_id==p.id,or_(Auction.state.in_(['draft','scheduled','live']), (Auction.state=='awarded') & Auction.reserved.is_(True))).order_by(Auction.created_at.desc()))
@@ -175,10 +191,15 @@ def order_view(db,order,user):
     all_sellers=list(db.scalars(select(SellerOrder).where(SellerOrder.order_id==order.id)))
     if user.id!=order.customer_id and user.role!='admin' and not any(s.farmer_id==user.id for s in all_sellers):fail(404,'Order not found')
     sellers=all_sellers if user.id==order.customer_id or user.role=='admin' else [s for s in all_sellers if s.farmer_id==user.id]
+    reviewed = {}
+    if user.id == order.customer_id:
+        reviewed = {(r.seller_order_id,r.product_id):r.rating for r in db.scalars(
+            select(Review).where(Review.customer_id==user.id, Review.seller_order_id.in_([so.id for so in sellers]))
+        )}
     data=[]
     for so in sellers:
         items=list(db.scalars(select(OrderItem).where(OrderItem.seller_order_id==so.id)))
-        data.append({k:getattr(so,k) for k in ['id','farmer_id','farm_id','fulfillment','status','payment_status','destination','expires_at','updated_at']}|{'subtotal_bdt':m(so.subtotal_bdt),'delivery_fee_bdt':m(so.delivery_fee_bdt),'total_bdt':m(so.total_bdt),'items':[{'product_id':i.product_id,'name':i.name,'unit':i.unit,'quantity':q(i.quantity),'unit_price_bdt':m(i.unit_price_bdt),'line_total_bdt':m(i.line_total_bdt)} for i in items]})
+        data.append({k:getattr(so,k) for k in ['id','farmer_id','farm_id','fulfillment','status','payment_status','destination','expires_at','updated_at']}|{'subtotal_bdt':m(so.subtotal_bdt),'delivery_fee_bdt':m(so.delivery_fee_bdt),'total_bdt':m(so.total_bdt),'items':[{'product_id':i.product_id,'name':i.name,'unit':i.unit,'quantity':q(i.quantity),'unit_price_bdt':m(i.unit_price_bdt),'line_total_bdt':m(i.line_total_bdt),'review_rating':reviewed.get((so.id,i.product_id))} for i in items]})
     states={s.status for s in sellers};payment={s.payment_status for s in sellers}
     status=next(iter(states)) if len(states)==1 else 'partially_fulfilled'
     return {'id':order.id,'customer_id':order.customer_id,'auction_id':order.auction_id,'created_at':order.created_at,'status':status,'payment_status':'cash_recorded' if payment=={'cash_recorded'} else 'demo_unpaid','total_bdt':m(sum((s.total_bdt for s in sellers),Decimal(0))),'currency':'BDT','seller_orders':data,'notice':NOTICE}

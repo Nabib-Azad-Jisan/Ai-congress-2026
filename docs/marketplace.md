@@ -1,5 +1,11 @@
 # KrishiMarket marketplace
 
+## Reviews and optional transportation
+
+After a delivery or pickup is marked complete, the buyer can leave one 1-5 rating and comment per purchased product from Orders. Seller ratings average completed-order product ratings across all the seller's listings. Nationwide discovery puts rated sellers first by average, breaking ties by the number of reviews. With location enabled, nearby-first remains available. **Top-rated sellers** ranks nationwide results by rating even when a location is supplied.
+
+Product pages show the seller's transportation fee before checkout. Free pickup is preselected wherever offered. Paid transportation is added only when chosen, and delivery-only listings require explicit selection. When several items ship from the same seller and farm, the highest applicable fee is charged once for that shipment.
+
 ## Listing photos and video
 
 In Sell, choose New listing and attach an optional photo and video before saving. The seller can add up to six photos after saving, and can replace the listing video by removing the current one. Photos accept JPG, PNG or WebP up to 8 MB. A listing can have one MP4 or WebM up to 20 MB. Buyers can load the clip on the product page once the listing is public. Draft media uses the same ownership checks as photos.

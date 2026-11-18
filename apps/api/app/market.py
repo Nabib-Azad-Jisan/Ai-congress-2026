@@ -56,7 +56,7 @@ def farmer_profile(id:str):
         if user.role=='customer':
             listing_id=db.scalar(select(Product.id).where(Product.farmer_id==id,Product.status.in_(['published','out_of_stock']),Product.moderation_status=='visible').limit(1))
             if not listing_id:s.fail(404,'Farmer not found')
-        return s.profile_view(s.profile(db,user))
+        return s.profile_view(s.profile(db,user))|{'seller_rating':s.seller_ratings(db,[id]).get(id)}
 
 @router.get('/market/addresses')
 def addresses(user:Who):
@@ -77,7 +77,7 @@ def delete_address(id:str,user:Who):
 @router.get('/market/products')
 def products(user:Maybe,q:str=Query(default='',max_length=150),category:str|None=None,unit:str|None=None,
              district:str|None=None,district_filter:str|None=None,lat:float|None=Query(default=None,ge=20.4,le=26.7),lon:float|None=Query(default=None,ge=88,le=92.8),
-             sort:str=Query(default='nearby',pattern='^(nearby|nearest|price|price_desc|newest)$'),available:bool=True,offset:int=Query(default=0,ge=0),limit:int=Query(default=20,ge=1,le=100)):
+             sort:str=Query(default='nearby',pattern='^(nearby|nearest|price|price_desc|newest|top_rated)$'),available:bool=True,offset:int=Query(default=0,ge=0),limit:int=Query(default=20,ge=1,le=100)):
     if (lat is None)!=(lon is None):s.fail(422,'Provide both location coordinates, or leave both unset')
     with s.transaction() as db:
         s.tick(db);query=select(Product).join(User,User.id==Product.farmer_id).where(Product.status.in_(['published','out_of_stock']),Product.moderation_status=='visible',User.is_active.is_(True))
@@ -87,17 +87,23 @@ def products(user:Maybe,q:str=Query(default='',max_length=150),category:str|None
         if district_filter:query=query.where(func.lower(Product.district)==district_filter.lower())
         if available:query=query.where(Product.stock_quantity>0)
         rows=[p for p in db.scalars(query) if not p.available_from or p.available_from<=s.clock().date().isoformat()]
+        ratings=s.seller_ratings(db,{p.farmer_id for p in rows})
         items=[]
         for p in rows:
             if not s.listing_eligible(db,p):continue
-            item=s.product_view(db,p,user,lat,lon)
+            item=s.product_view(db,p,user,lat,lon,ratings=ratings)
             d=s.distance_km(lat,lon,p.latitude,p.longitude) if lat is not None and lon is not None and p.latitude is not None and p.longitude is not None else None
             item.update(distance_km=round(d,1) if d is not None else None,nearby=d is not None and d<=20)
             items.append(item)
         if sort in ['price','price_desc']:items.sort(key=lambda p:Decimal(p['price_bdt']),reverse=sort=='price_desc')
         elif sort=='newest':items.sort(key=lambda p:p['created_at'],reverse=True)
+        elif sort=='top_rated' or (sort=='nearby' and lat is None):
+            def rating_key(item):
+                rating=item['seller_rating'] or {'average':0,'count':0}
+                return (-rating['average'],-rating['count'],item['name'].casefold(),item['id'])
+            items.sort(key=rating_key)
         else:items.sort(key=lambda p:(not p['nearby'] if sort=='nearby' else False,p['distance_km'] is None,p['distance_km'] if p['distance_km'] is not None else float('inf'),p['name'].casefold()))
-        return s.paginate(items,offset,limit)|{'location':{'district':district,'lat':lat,'lon':lon,'radius_km':20} if lat is not None or district else None,'sort':sort,'notice':'Approximate geographic distance to a coarse farm location; not road distance. Nationwide results remain available.' if lat is not None else 'Choose an optional location for nearby-first distance ranking. Showing nationwide listings.'}
+        return s.paginate(items,offset,limit)|{'location':{'district':district,'lat':lat,'lon':lon,'radius_km':20} if lat is not None or district else None,'sort':sort,'notice':'Approximate geographic distance to a coarse farm location; not road distance. Nationwide results remain available.' if lat is not None else 'Showing nationwide listings. Add a location for nearby-first ranking.'}
 
 @router.post('/market/products')
 def create_product(body:ProductCreate,user:Who):
