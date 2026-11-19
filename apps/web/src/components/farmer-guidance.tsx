@@ -25,16 +25,19 @@ function Choices<T extends string>({question, value, options, onChange, disabled
   </fieldset>;
 }
 
-export function FarmerQuestions({value, onChange, locale, disabled, leafOnly}: {
-  value: FarmerContext; onChange: (next: FarmerContext) => void; locale: Locale; disabled?: boolean; leafOnly?: boolean;
+export function FarmerQuestions({value: answer, onChange, locale, disabled, leafOnly}: {
+  value?: FarmerContext; onChange: (next?: FarmerContext) => void; locale: Locale; disabled?: boolean; leafOnly?: boolean;
 }) {
   const t = (en: string, bn: string) => locale === 'bn' ? bn : en;
+  const value = answer ?? initialFarmerContext;
   const leaf = leafOnly || value.kind === 'leaf';
   const unknown = t('Not sure', 'জানি না');
+  const partChoice = !leafOnly && <Choices<FarmerContext['kind'] | 'auto'> question={t('Which part are you checking?', 'কোন অংশটি পরীক্ষা করবেন?')}
+      value={answer?.kind ?? 'auto'} options={[['auto', t('Identify from the photo', 'ছবি দেখে শনাক্ত করুন')], ['leaf', t('Leaf', 'পাতা')], ['produce', t('Fruit, vegetable or tuber', 'ফল, সবজি বা কন্দ')]]}
+      onChange={kind => onChange(kind === 'auto' ? undefined : {...initialFarmerContext, kind})} disabled={disabled}/>;
+  if (!leafOnly && !answer) return <div className={styles.questions}>{partChoice}</div>;
   return <div className={styles.questions}>
-    {!leafOnly && <Choices<FarmerContext['kind']> question={t('Which part are you checking?', 'কোন অংশটি পরীক্ষা করবেন?')}
-      value={value.kind} options={[['leaf', t('Leaf', 'পাতা')], ['produce', t('Fruit, vegetable or tuber', 'ফল, সবজি বা কন্দ')]]}
-      onChange={kind => onChange({...initialFarmerContext, kind})} disabled={disabled}/>}
+    {partChoice}
     {leaf ?
       <Choices<FarmerContext['onset']> question={t('When did you first notice it?', 'প্রথম কবে লক্ষ করেছেন?')}
         value={value.onset}

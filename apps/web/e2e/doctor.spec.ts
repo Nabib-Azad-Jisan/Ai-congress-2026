@@ -1,6 +1,30 @@
 import {test,expect} from '@playwright/test';
 const api=process.env.E2E_API_URL||'http://127.0.0.1:8300/api/v1';
 const photo={name:'leaf.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64')};
+test('new farmer recovers the farm list, creates a farm and saves a potato plot in AgroDoctor',async({page,request})=>{
+ const reg=await request.post(api+'/auth/register',{data:{name:'Farm selector test',role:'farmer',email:`farm-${crypto.randomUUID()}@example.test`,password:'Test only 827469!'}});
+ expect(reg.ok()).toBeTruthy();
+ const {token}=await reg.json();
+ await page.addInitScript(t=>localStorage.setItem('agrosphere-token',t),token);
+ let unavailable=true;
+ await page.route('**/api/v1/farms',route=>unavailable&&route.request().method()==='GET'
+   ?route.fulfill({status:503,json:{message:'temporarily unavailable'}}):route.continue());
+ await page.goto('/en/agrodoctor');
+ await page.getByLabel('Screening crop',{exact:true}).selectOption('potato');
+ const retry=page.getByRole('button',{name:'Retry loading farms'});
+ await expect(retry).toBeVisible({timeout:15000});
+ await expect(page.getByLabel('New crop plot farm')).toHaveCount(0);
+ unavailable=false;
+ await retry.click();
+ await page.getByLabel('Farm name',{exact:true}).fill('My first farm');
+ await page.getByLabel('Farm district',{exact:true}).fill('Gazipur');
+ await page.getByRole('button',{name:'Create farm',exact:true}).click();
+ const farm=page.getByLabel('New crop plot farm');
+ await expect(farm.locator('option:checked')).toHaveText('My first farm');
+ await page.getByLabel('New crop plot name').fill('FF');
+ await page.getByRole('button',{name:'Create crop plot'}).click();
+ await expect(page.getByLabel('Screening plot',{exact:true}).locator('option:checked')).toHaveText('FF');
+});
 test('catalog, plot creation, crop identity and stale upload protection',async({page,request})=>{
  const session=await (await request.post(api+'/auth/demo',{data:{}})).json();
  await page.addInitScript(token=>localStorage.setItem('agrosphere-token',token),session.token);
@@ -57,8 +81,8 @@ test('non-tomato crops can be screened without creating a plot',async({page,requ
   await expect(page.getByRole('region',{name:'Screening result'})).toContainText('Screening preview');
   if(crop==='potato'){
    const result=page.getByRole('region',{name:'Screening result'});
-   await expect(result.getByRole('heading',{name:'Compare these symptoms on the plant'})).toBeVisible();
-   await expect(result.getByText('Look for dark, irregular patches',{exact:false})).toBeVisible();
+   await expect(result.getByRole('heading',{name:'Compare these symptoms on the plant'})).toHaveCount(0);
+   await expect(result.getByText('Look for dark, irregular patches',{exact:false}).first()).not.toBeVisible();
    await result.getByText('Check for other potato leaf problems').click();
    await expect(result.getByRole('heading',{name:/potato leafroll/})).toBeVisible();
    await expect(result.getByRole('heading',{name:/virus-like mosaic/})).toBeVisible();
@@ -195,4 +219,75 @@ test('vision offers only tomato and potato and shows evidence without a plot', a
  await expect(result).toContainText('Dark patches under the skin.');
  await expect(result).toContainText(explanation);
  await expect(result).toContainText('Screening preview');
+});
+
+test('cloud outage offers a local retry only after the farmer confirms a leaf', async ({page, request}) => {
+ const session=await (await request.post(api+'/auth/demo',{data:{}})).json();
+ await page.addInitScript(token=>localStorage.setItem('agrosphere-token',token),session.token);
+ await page.route('**/doctor/capabilities', async route => {
+  const data=await (await route.fetch()).json();
+  await route.fulfill({json:{...data,provider:'groq'}});
+ });
+ const uploads:string[]=[];
+ await page.route('**/doctor/cases',async route=>{
+  if(route.request().method()!=='POST') return route.continue();
+  const body=route.request().postDataBuffer()!.toString('latin1');
+  uploads.push(body);
+  if(uploads.length===1)return route.fulfill({status:503,json:{code:'VISION_UNAVAILABLE',message:'Groq vision is unavailable.'}});
+  await route.fulfill({json:{
+   crop:'potato',status:'unable_to_classify',fallback_reason:'vision_unavailable',
+   classification:{top_label:'unknown',abstained:true,score:null,alternatives:[],rejection_reason:'conflicting_leaf_views',pattern_hint:'blight_like'},
+   model:{version:'local-research',available:true},quality_flags:[],meta:{mode:'MIXED'},advice:['Take a second photo.'],
+  }});
+ });
+ await page.goto('/en/agrodoctor');
+ await page.getByLabel('Screening crop',{exact:true}).selectOption('potato');
+ await page.getByLabel('Upload crop photo',{exact:true}).setInputFiles(photo);
+ await page.getByRole('button',{name:'Screen photo',exact:true}).click();
+ await expect(page.getByRole('alert').filter({hasText:'unavailable'})).toBeVisible();
+ await page.getByRole('button',{name:'This is a leaf · use local screening'}).click();
+ const result=page.getByRole('region',{name:'Screening result'});
+ await expect(result).toContainText('Local leaf screening');
+ await expect(result).toContainText('The center and the full photo resembled different blight references.');
+ await expect(result.getByRole('heading',{level:2}).first()).toHaveText('Blight-like pattern · cause uncertain');
+ expect(uploads).toHaveLength(2);
+ expect(uploads[0]).toContain('name="plant_part"\r\n\r\nauto');
+ expect(uploads[1]).toContain('name="plant_part"\r\n\r\nleaf');
+ expect(uploads[1]).toContain('name="screening_mode"\r\n\r\nlocal_leaf');
+ for(const body of uploads){
+  expect(body).toContain('filename="leaf.png"');expect(body).not.toContain('name="plot_id"');
+ }
+});
+
+test('explicit produce stays in vision mode and shows the image finding before general advice', async ({page,request})=>{
+ const session=await (await request.post(api+'/auth/demo',{data:{}})).json();
+ await page.addInitScript(token=>localStorage.setItem('agrosphere-token',token),session.token);
+ await page.route('**/doctor/capabilities',async route=>{
+  const data=await (await route.fetch()).json();await route.fulfill({json:{...data,provider:'groq'}});
+ });
+ let attempts=0;
+ await page.route('**/doctor/cases',async route=>{
+  if(route.request().method()!=='POST')return route.continue();
+  const body=route.request().postDataBuffer()!.toString('latin1');
+  expect(body).toContain('name="plant_part"\r\n\r\nother');expect(body).not.toContain('local_leaf');
+  if(++attempts===1)return route.fulfill({status:429,json:{code:'VISION_UNAVAILABLE',message:'Try again in 2 seconds.'}});
+  await route.fulfill({json:{crop:'potato',classification:{abstained:true,top_label:'unknown'},model:{version:'test-vision'},
+   assessment:{subject:'Potato tuber',part:'produce',crop_match:'match',outcome:'uncertain',pattern:'Rough raised skin patches',signs:['Rough patches on the skin.'],
+    explanation:'Several conditions can affect tuber skin.',uncertainty:'The cause is unclear.',
+    field_check:{possible_explanation:'The skin changes can resemble scab.',next_check:'Check another tuber.',source_url:'https://extension.umn.edu/'}},
+   advice:['Check nearby tubers.']}});
+ });
+ await page.goto('/en/agrodoctor');
+ await page.getByLabel('Screening crop',{exact:true}).selectOption('potato');
+ await page.getByRole('radio',{name:'Fruit, vegetable or tuber'}).check();
+ await page.getByLabel('Upload crop photo',{exact:true}).setInputFiles(photo);
+ await page.getByRole('button',{name:'Screen photo',exact:true}).click();
+ await expect(page.getByRole('alert').filter({hasText:'2 seconds'})).toBeVisible();
+ await expect(page.getByRole('button',{name:'This is a leaf · use local screening'})).toHaveCount(0);
+ await page.getByRole('button',{name:'Screen photo',exact:true}).click();
+ const result=page.getByRole('region',{name:'Screening result'});
+ await expect(result.getByRole('heading',{level:2}).first()).toHaveText('Rough raised skin patches');
+ await expect(result).toContainText('The skin changes can resemble scab.');
+ await expect(result).toContainText('Check another tuber.');
+ await expect(result.getByRole('link',{name:'Field reference'})).toHaveAttribute('href','https://extension.umn.edu/');
 });

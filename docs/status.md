@@ -1,3 +1,25 @@
+## FloodCrop rainfall outlook · 20 November 2026
+
+FloodCrop now sums complete hourly intervals inside the selected 24-, 48- or 72-hour window. Open-Meteo labels precipitation by the end of each hour. Counting the hour before the window could change the preparation advice. Each outlook expires at the end of its selected window. A missing reading in that window produces a retryable error. [Open-Meteo hourly definitions](https://open-meteo.com/en/docs#hourly_parameter_definition)
+
+Live weather uses the selected farm's consented coordinates. Moving a plot or changing its waterlogging history clears old advice and discards an outdated refresh already in progress. Viewing simulated rain preserves the saved live outlook and its Action Center record. The page guides new farmers to set up a plot, labels simulated rain, and offers a retry during outages. The preparation threshold is illustrative. Official river warnings are available through the [Bangladesh Flood Forecasting and Warning Centre](https://www.ffwc.gov.bd/).
+
+A browser check using public Dhaka coordinates showed 29.5 mm over 24 hours, 57.1 mm over 48 hours and 60 mm over 72 hours. All three totals matched independent sums of the provider's hourly values at the time of the test. The test switched to simulated rain, checked the saved live evidence and verified that changing the plot's waterlogging history cleared the earlier advice. The temporary account was removed.
+
+All 322 API tests and 91 web unit tests passed. The full browser run passed 43 of 44 tests, including all FloodCrop checks. The previously documented marketplace photo gallery test still failed at the farmer role check.
+
+## AgroDoctor photo screening reliability · 20 November 2026
+
+The plot form shows a loading message while fetching farms and a retry button on failure. A farmer with no farms can create one by entering its name and district in AgroDoctor. The new farm is selected for plot creation. An isolated browser test covered a failed fetch, recovery, first farm creation and saving a potato plot.
+
+The disease identifier offers potato and tomato. The online assessment describes visible damage, including foliage and harvested produce. For eight recognizable disease or disorder patterns it can also show a bilingual field check and an extension reference. These checks require compatible visible features, crop and plant part. The local leaf model retains its existing trained classes.
+
+The supplied potato field photo passed image-quality checks. The center crop ranked a tomato late-blight reference first. The full frame ranked a potato early-blight reference first. The offline result now explains that disagreement and asks for another view. The model withholds the disease label. A live Groq upload of the same image in English and Bangla described brown collapsed leaflets and a dark stem lesion. The app showed late blight as a possible explanation and requested an underside photo at the edge of a fresh lesion. A mobile browser upload reproduced the finding. A separate tomato fruit photo returned possible mold-associated decay. These are functional examples. Field accuracy has not been measured. [University of Minnesota Extension guide to late blight](https://extension.umn.edu/agriculture/specialty-crops/vegetable-farming/disease-management/late-blight)
+
+The API makes one bounded retry for a transient connection, service or response-format failure. A live rate limit returned a retry interval. A confirmed leaf can use the installed local classifier when online screening is unavailable. Auto-detection keeps the image available for retry and lets the farmer confirm it is a leaf. Produce and two-photo assessments require the vision service. Configure `GROQ_API_KEY` on the API server for online analysis.
+
+Verification passed 298 API tests, 91 web unit tests, all AgroDoctor browser tests, TypeScript and the production build. The full browser suite passed 40 of 41 tests. The remaining marketplace-gallery test also failed on unmodified upstream commit `67211fd` because its signed-in farmer fixture could not reach the customer-only gallery. Lint reported nine existing warnings and zero errors.
+
 ## Seller order details and potato screening · 19 November 2026
 
 Seller Studio shows the three most recent orders and links to the full history. New pickup orders snapshot the customer’s area and district separately from the farm pickup area. Older pickup orders have no stored customer area. Farmer navigation includes a direct call to the [Bangladesh Agriculture Call Centre](https://ais.gov.bd/pages/static-pages/6922df5e933eb65569e21833).

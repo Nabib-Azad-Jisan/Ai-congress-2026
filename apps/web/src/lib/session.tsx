@@ -15,6 +15,7 @@ type SessionContextValue = {
   plot: Plot | undefined;
   plots: Plot[];
   plotsLoading: boolean;
+  plotsFailed: boolean;
   refreshSession: () => Promise<void>;
   signOut: () => Promise<void>;
   beginDemo: (name: string) => Promise<void>;
@@ -224,6 +225,7 @@ export function SessionProvider({
       plot,
       plots,
       plotsLoading: plotsQuery.isLoading,
+      plotsFailed: plotsQuery.isError,
       refreshSession,
       signOut,
       beginDemo,
@@ -240,6 +242,7 @@ export function SessionProvider({
       setSelectedPlotId,
       plots,
       plotsQuery.isLoading,
+      plotsQuery.isError,
       refreshSession,
       signOut,
       beginDemo,

@@ -41,7 +41,7 @@ from . import district_prices
 from .district_prices_catalog import COMMODITY_OPTIONS
 from .doctor_context import FarmerContext
 from .doctor_photos import case_photo_paths, decode_photo, read_upload
-from .doctor_models import CROPS, DoctorRegistry, normalize_crop
+from .doctor_models import CROPS, DoctorRegistry, VisionUnavailable, normalize_crop
 from .schemas import (
     ActionUpdate,
     ComparisonInput,
@@ -71,6 +71,7 @@ from .services import (
     ModelBusyError,
     ModelRegistry,
     OpenMeteoProvider,
+    FFWC_URL,
     SimulatorAdapter,
     acquire_upload_slot,
     calculate,
@@ -104,6 +105,7 @@ app.add_middleware(
     allow_origins=os.getenv('CORS_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(','),
     allow_methods=['GET', 'POST', 'PATCH', 'DELETE'],
     allow_headers=['Authorization', 'Content-Type', 'X-Device-Key', 'Idempotency-Key'],
+    expose_headers=['Retry-After'],
 )
 
 
@@ -124,10 +126,11 @@ async def http_error(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={
-            'code': f'HTTP_{exc.status_code}',
+            'code': 'VISION_UNAVAILABLE' if isinstance(exc, VisionUnavailable) else f'HTTP_{exc.status_code}',
             'message': str(exc.detail),
             'request_id': getattr(request.state, 'request_id', None),
         },
+        headers=exc.headers,
     )
 
 
@@ -359,6 +362,16 @@ def _location_signature(payload: dict[str, Any]) -> tuple:
     )
 
 
+def _invalidate_plot_outlook(db, user, plot, reason, source):
+    for old in records(db, user, 'weather', plot.id):
+        db.delete(old)
+    upsert_action(
+        db, user, plot.id, 'flood', 'Refresh weather for your selected area', reason,
+        provenance('MIXED', source),
+        fingerprint=evidence_fingerprint('flood', {'event': source, 'at': iso_now()}),
+    )
+
+
 def apply_farm_location_change(
     db: DBSession,
     user: User,
@@ -378,18 +391,7 @@ def apply_farm_location_change(
     for p in records(db, user, 'plot'):
         if p.payload.get('farm_id') != farm.id:
             continue
-        for old in records(db, user, 'weather', p.id):
-            db.delete(old)
-        upsert_action(
-            db,
-            user,
-            p.id,
-            'flood',
-            'Refresh weather for your selected area',
-            reason,
-            provenance('MIXED', 'farmer_selected_location'),
-            fingerprint=evidence_fingerprint('flood', {'event': 'location_invalidated', 'farm_id': farm.id, 'at': iso_now()}),
-        )
+        _invalidate_plot_outlook(db, user, p, reason, 'farmer_selected_location')
     return True
 
 
@@ -765,6 +767,19 @@ def plot(id: str, user: Who, db: Db):
     return view(owned(db, user, id, 'plot'))
 
 
+def _apply_plot_edits(db, user, plot, updates):
+    previous = plot.payload
+    updated = {**previous, **updates}
+    plot.payload = updated
+    touch(plot)
+    if (updated['farm_id'] != previous['farm_id']
+            or updated.get('low_lying', False) != previous.get('low_lying', False)):
+        _invalidate_plot_outlook(
+            db, user, plot, 'Plot settings changed. Refresh the outlook to update rain preparations.',
+            'farmer_updated_plot',
+        )
+
+
 @app.patch('/api/v1/plots/{id}')
 def edit_plot(id: str, body: PlotPatch, user: Who, db: Db):
     p = owned(db, user, id, 'plot')
@@ -772,8 +787,7 @@ def edit_plot(id: str, body: PlotPatch, user: Who, db: Db):
     if 'farm_id' in updates:
         owned(db, user, updates['farm_id'], 'farm')
         p.farm_id = updates['farm_id']
-    p.payload = {**p.payload, **updates}
-    touch(p)
+    _apply_plot_edits(db, user, p, updates)
     audit(db, user, 'plot.updated', id)
     db.commit()
     return view(p)
@@ -882,6 +896,7 @@ def upload(
     symptoms: Annotated[str, Form(max_length=2000)] = '',
     crop: Annotated[str | None, Form()] = None,
     plant_part: Annotated[Literal['auto', 'leaf', 'other'], Form()] = 'auto',
+    screening_mode: Annotated[Literal['auto', 'local_leaf'], Form()] = 'auto',
     locale: Annotated[Literal['en', 'bn'], Form()] = 'en',
     follow_up_image: Annotated[UploadFile | None, File()] = None,
     farmer_context: Annotated[str | None, Form(max_length=512)] = None,
@@ -904,6 +919,9 @@ def upload(
         raise HTTPException(422, str(exc)) from exc
     if selected_crop is None:
         raise HTTPException(422, 'Select a crop to screen a photo.')
+    local_retry = screening_mode == 'local_leaf'
+    if local_retry and (plant_part != 'leaf' or selected_crop not in ('potato', 'tomato') or follow_up_image is not None):
+        raise HTTPException(422, 'Local retry requires one potato or tomato leaf photo.')
     if plot_crop is not None and selected_crop != plot_crop:
         raise HTTPException(422, 'Selected crop must match the plot crop. Choose or create a matching plot.')
     recent = [r for r in records(db, user, 'case') if r.created_at > (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()]
@@ -920,7 +938,9 @@ def upload(
     slot = acquire_upload_slot()
     try:
         im = decode_photo(data)
-        if use_vision:
+        if local_retry:
+            result = {**DoctorRegistry().infer(im, selected_crop), 'fallback_reason': 'vision_unavailable'}
+        elif use_vision:
             second = decode_photo(second_data) if second_data is not None else None
             result = DoctorRegistry().screen_with_vision(im, selected_crop, plant_part, locale, second)
         else:
@@ -930,7 +950,7 @@ def upload(
     result.update(meta=_screen_meta(result), screening_locale=locale, photo_count=2 if second_data is not None else 1)
     if context is not None:
         result['farmer_context'] = context
-    if use_vision and p is not None and not _confirmed_plot_crop(result):
+    if 'assessment' in result and p is not None and not _confirmed_plot_crop(result):
         return {**result, 'save_notice': 'plot_crop_unconfirmed'}
     if p is None:
         return result
@@ -1158,41 +1178,68 @@ def outlook(
     if horizon_hours not in (24, 48, 72):
         raise HTTPException(422, 'Horizon must be 24, 48 or 72 hours')
     lat, lon = f.payload.get('latitude'), f.payload.get('longitude')
-    if mode == 'LIVE' and (lat is None or lon is None):
+    if mode == 'LIVE' and (f.payload.get('location_consent') is not True or lat is None or lon is None):
         raise HTTPException(422, 'Add consented farm coordinates for live weather')
+    farm_id = f.id
+    location = _location_signature(f.payload)
+    low_lying = p.payload.get('low_lying', False)
+    started_at = iso_now()
+    db.commit()  # Release the read connection before the network call.
     provider = OpenMeteoProvider() if mode == 'LIVE' else DemoWeatherProvider()
     try:
-        data = preparedness(
-            provider.forecast(lat if lat is not None else 24.0023, lon if lon is not None else 90.4264),
-            horizon_hours,
-            p.payload.get('low_lying', False),
-        )
-    except (httpx.HTTPError, ValueError, KeyError):
-        # Preserve the last successful observation but record that a newer
-        # refresh failed; downstream planning must not imply it succeeded.
-        cached = records(db, user, 'weather', plot_id)
-        if cached:
-            old = cached[0]
-            meta = dict(old.payload.get('meta') or {})
-            meta['quality_flags'] = list(dict.fromkeys([*(meta.get('quality_flags') or []), 'live_refresh_failed' if mode == 'LIVE' else 'weather_refresh_failed']))
-            old.payload = {**old.payload, 'meta': meta, 'last_refresh_failed_at': iso_now(), 'last_refresh_failed_mode': mode}
-            touch(old)
-            db.commit()
-        raise HTTPException(503, 'Weather unavailable. No simulated data substituted for live data.')
-    data['location'] = {'lat': lat if lat is not None else 24.0023, 'lon': lon if lon is not None else 90.4264}
-    existing = records(db, user, 'weather', plot_id)
-    if existing:
-        existing[0].payload = data
-        touch(existing[0])
-        weather_id = existing[0].id
+        forecast = provider.forecast(lat if lat is not None else 24.0023, lon if lon is not None else 90.4264)
+        data = preparedness(forecast, horizon_hours, low_lying)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        data = None
+
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx, user)
+        farm = tx.get(Record, farm_id, with_for_update=True)
+        plot = tx.get(Record, plot_id, with_for_update=True)
+        if not farm or not plot or farm.owner_id != actor.id or plot.owner_id != actor.id:
+            raise HTTPException(404, 'Record not found')
+        if (plot.payload.get('farm_id') != farm_id or _location_signature(farm.payload) != location
+                or plot.payload.get('low_lying', False) != low_lying):
+            raise HTTPException(409, 'Plot settings changed during the forecast. Refresh the outlook.')
+        existing = records(tx, actor, 'weather', plot_id)
+        previous = existing[0] if existing else None
+        saved = previous.payload if previous else {}
+        # A slow request must not replace a more recent refresh. A simulated
+        # preview must not replace a live forecast used for planning.
+        saved_mode = (saved.get('meta') or {}).get('mode')
+        newer_in_same_mode = saved_mode == mode and (saved.get('refresh_started_at') or '') > started_at
+        preserve = newer_in_same_mode or (mode == 'DEMO' and saved_mode == 'LIVE')
+        if data is not None:
+            data['location'] = {'lat': lat if lat is not None else 24.0023, 'lon': lon if lon is not None else 90.4264}
+            if not preserve:
+                _save_plot_outlook(tx, actor, plot_id, farm_id, previous, data, started_at)
+            return data
+        if previous and not preserve:
+            flag = 'live_refresh_failed' if mode == 'LIVE' else 'weather_refresh_failed'
+            meta = dict(saved.get('meta') or {})
+            meta['quality_flags'] = list(dict.fromkeys([*(meta.get('quality_flags') or []), flag]))
+            previous.payload = {**saved, 'meta': meta, 'last_refresh_failed_at': iso_now(),
+                                'last_refresh_failed_mode': mode, 'refresh_started_at': started_at}
+            touch(previous)
+    raise HTTPException(503, 'Weather unavailable. Please retry the forecast.')
+
+
+def _save_plot_outlook(db, user, plot_id, farm_id, previous, data, started_at):
+    payload = {**data, 'refresh_started_at': started_at}
+    if previous:
+        previous.payload = payload
+        touch(previous)
+        weather_id = previous.id
     else:
-        weather_id = add(db, user, 'weather', data, plot_id, farm_id=f.id).id
-    effective = compute_effective_weather(data)
+        weather_id = add(db, user, 'weather', payload, plot_id, farm_id=farm_id).id
+    horizon_hours = data['horizon_hours']
     fp = evidence_fingerprint('flood', {
         'location': data.get('location'),
-        'valid_until': (effective.get('meta') or {}).get('valid_until') or data.get('meta', {}).get('valid_until'),
-        'total_mm': effective.get('total_mm', data.get('total_mm')),
-        'level': effective.get('level', data.get('level')),
+        'source_mode': data['meta']['mode'],
+        'threshold_mm': data['threshold_mm'],
+        'valid_until': data.get('horizon_valid_until'),
+        'total_mm': data['total_mm'],
+        'level': data['level'],
         'horizon_hours': horizon_hours,
     })
     upsert_action(
@@ -1201,14 +1248,12 @@ def outlook(
         plot_id,
         'flood',
         'Review rain preparedness',
-        f"{effective.get('total_mm', data['total_mm'])} mm / {horizon_hours} hours. {data['disclaimer']}",
-        effective.get('meta', data['meta']),
+        f"{data['total_mm']} mm / {horizon_hours} hours. {data['disclaimer']}",
+        data['meta'],
         source_record_id=weather_id,
         fingerprint=fp,
     )
     audit(db, user, 'rainwatch.updated', plot_id, plot_id)
-    db.commit()
-    return effective
 
 
 @app.get('/api/v1/flood/plots/{plot_id}/official-alerts')
@@ -1217,7 +1262,7 @@ def official(plot_id: str, user: Who, db: Db):
     return {
         'alerts': [],
         'status': 'unavailable',
-        'source_url': 'https://ww2.ffwc.gov.bd/',
+        'source_url': FFWC_URL,
         'reason': 'No authorized official bulletin feed configured',
     }
 
@@ -1225,8 +1270,7 @@ def official(plot_id: str, user: Who, db: Db):
 @app.post('/api/v1/flood/plots/{plot_id}/vulnerability')
 def vulnerability(plot_id: str, body: VulnerabilityInput, user: Who, db: Db):
     p = owned(db, user, plot_id, 'plot')
-    p.payload = {**p.payload, **body.model_dump()}
-    touch(p)
+    _apply_plot_edits(db, user, p, body.model_dump())
     audit(db, user, 'plot.vulnerability_updated', plot_id, plot_id)
     db.commit()
     return view(p)
@@ -1802,7 +1846,7 @@ def ingest(body: SensorInput, db: Db, x_device_key: Annotated[str, Header()]):
 def providers():
     return {
         'weather': {'provider': 'Open-Meteo', 'live_requires': 'consented coordinates; network', 'demo': 'scenario_simulated'},
-        'flood': {'status': 'official_feed_unavailable', 'url': 'https://ww2.ffwc.gov.bd/'},
+        'flood': {'status': 'official_feed_unavailable', 'url': FFWC_URL},
         'market': {'status': 'private_csv_or_demo', 'url': 'https://market.dam.gov.bd/'},
         'model': DoctorRegistry().card(),
         'doctor_models': DoctorRegistry().capabilities()['models'],

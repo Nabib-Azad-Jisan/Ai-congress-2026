@@ -8,8 +8,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 from . import doctor_vision
+from .doctor_patterns import field_check
 from .services import ModelBrokenError
 
 CATALOG = json.loads(Path(__file__).with_name('doctor_catalog.json').read_text(encoding='utf-8'))
@@ -19,6 +21,15 @@ RICE_LABELS = CATALOG['models']['rice']['labels']
 NOTICE = 'Research screening only. Crop identification and out-of-distribution rejection are not field-validated.'
 _LOCK = threading.RLock()
 _CACHE: dict[tuple, dict] = {}
+
+
+class VisionUnavailable(HTTPException):
+    """The remote image assessment could not complete."""
+
+
+def _blight_reference(label: str) -> bool:
+    return label in {'Potato___Early_blight', 'Potato___Late_blight',
+                     'Tomato___Early_blight', 'Tomato___Late_blight'}
 
 
 def normalize_crop(value: str) -> str:
@@ -161,9 +172,22 @@ class DoctorRegistry:
     def screen_with_vision(self, image: Image.Image, crop: str, part: str, locale: str,
                            follow_up: Image.Image | None = None) -> dict:
         bn = locale == 'bn'
-        result = doctor_vision.inspect_photo(image, crop, part, 'Bangla' if bn else 'English', follow_up)
+        try:
+            result = doctor_vision.inspect_photo(image, crop, part, 'Bangla' if bn else 'English', follow_up)
+        except HTTPException as exc:
+            if exc.status_code not in (429, 502, 503, 504):
+                raise
+            if part == 'leaf' and crop in ('potato', 'tomato') and follow_up is None:
+                try:
+                    return {**self.infer(image, crop), 'fallback_reason': 'vision_unavailable'}
+                except ModelBrokenError:
+                    pass  # Preserve the provider's retry information when neither model is available.
+            raise VisionUnavailable(exc.status_code, exc.detail, headers=exc.headers) from exc
         assessment = result['assessment']
         if assessment['outcome'] != 'no_visible_damage' or assessment['part'] != 'leaf':
+            check = field_check(crop, assessment, locale)
+            if check:
+                assessment['field_check'] = check
             return result
 
         # A false healthy result can hide a lesion. Only corroborate a negative using a
@@ -216,9 +240,10 @@ class DoctorRegistry:
                 with torch.inference_mode():
                     logits = bundle['model'](transform(image).unsqueeze(0))[0]
                 result = classify_logits(logits, card['labels'], crop, card['threshold'])
-                if crop in {'tomato', 'potato'} and result['rejection_reason'] == 'low_confidence':
+                if crop in {'tomato', 'potato'} and result['rejection_reason'] in ('low_confidence', 'crop_mismatch'):
                     candidate = result['alternatives'][0]['label']
-                    if not candidate.lower().endswith('___healthy'):
+                    if (not candidate.lower().endswith('___healthy') and
+                            (result['rejection_reason'] == 'low_confidence' or _blight_reference(candidate))):
                         # The standard center crop can omit affected tissue near the edges.
                         # Accept the wider view only when it supports the same condition.
                         side = card['preprocessing']['crop']
@@ -230,6 +255,14 @@ class DoctorRegistry:
                         wider = classify_logits(wider_logits, card['labels'], crop, card['threshold'])
                         if wider['top_label'] == candidate:
                             result = {**wider, 'image_view': 'full_frame'}
+                        else:
+                            wide_label = wider['alternatives'][0]['label']
+                            # A weak first-place label in a nearly flat score distribution
+                            # provides no reason to single out blight for a field check.
+                            if (candidate != wide_label and _blight_reference(candidate) and _blight_reference(wide_label)
+                                    and min(result['score'], wider['score']) > 0.5
+                                    and crop in (crop_for_label(candidate), crop_for_label(wide_label))):
+                                result.update(rejection_reason='conflicting_leaf_views', pattern_hint='blight_like')
             except Exception as exc:
                 raise ModelBrokenError(f'Crop model inference failed safely: {exc}') from exc
         return dict(crop=crop, classification=result, model=card, quality_flags=flags,

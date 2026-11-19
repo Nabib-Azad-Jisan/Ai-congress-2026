@@ -52,7 +52,8 @@ test('reported answers, Bangla referral and follow-up survive an unsuccessful pr
   await page.getByLabel('Upload crop photo',{exact:true}).setInputFiles(image);
   await page.getByRole('button',{name:'Screen photo',exact:true}).click();
   const result=page.getByRole('region',{name:'Screening result'});
-  await expect(result.getByRole('heading').first()).toHaveText('What should I do today?');
+  await expect(result.getByRole('heading').first()).toContainText('Possible internal decay');
+  await expect(result.getByRole('heading',{name:'What should I do today?'})).toBeVisible();
   await expect(result.locator('a[href="tel:16123"]')).toBeVisible();
   await expect(result.locator('p[lang=bn]')).toContainText('অনেক');
   await expect(result.locator('p[lang=bn]')).toContainText('আলু');
