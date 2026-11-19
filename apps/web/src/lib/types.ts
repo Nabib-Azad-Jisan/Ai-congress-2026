@@ -82,11 +82,42 @@ export type Feedback = {
   review_notice?: string;
 };
 
+export type FarmerContext = {
+  kind: 'leaf' | 'produce';
+  onset: 'today' | 'days' | 'week_plus' | 'unknown';
+  location: 'field' | 'storage' | 'unknown';
+  extent: 'one' | 'several' | 'many' | 'unknown';
+};
+
 export type DoctorScreening = {
+  id?: string;
+  farmer_context?: FarmerContext;
+  screening_locale?: 'bn' | 'en';
+  initial_screening_locale?: 'bn' | 'en';
+  initial_assessment?: DoctorScreening['assessment'];
+  photo_count?: number;
+  second_photo_available?: boolean;
+  image_available?: boolean;
   crop: string;
   plot_id?: string | null;
   plot_name?: string | null;
   status: string;
+  save_notice?: 'plot_crop_unconfirmed';
+  assessment?: {
+    outcome: 'possible_condition' | 'no_visible_damage' | 'uncertain' | 'unrelated';
+    subject: string;
+    part: 'leaf' | 'produce' | 'other' | 'unknown';
+    condition: string | null;
+    marker?: string;
+    produce_finding?: string | null;
+    crop_match?: 'match' | 'mismatch' | 'unknown';
+    pattern?: string;
+    distinguishing_sign?: string | null;
+    signs: string[];
+    explanation: string;
+    uncertainty: string;
+    next_steps: string[];
+  };
   quality_flags: string[];
   classification: {
     top_label: string;
@@ -150,6 +181,7 @@ export type CropCapability = {
   limitations: string[];
 };
 export type DoctorCapabilities = {
+  provider?: 'groq';
   crops: CropCapability[];
   models: Model[];
   limitations: string[];

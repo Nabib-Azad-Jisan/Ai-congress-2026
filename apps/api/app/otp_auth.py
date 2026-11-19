@@ -1,4 +1,4 @@
-"""Passwordless phone and email login through Twilio Verify."""
+"""Verified account signup/login with SMTP email or optional Twilio delivery."""
 import base64
 import binascii
 import io
@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import SignupIdentity, User, get_db
+from .email_otp import smtp_ready, start_email, consume_email
 from .market_auth import AuthLimiter, _DUMMY_HASH, hash_password, issue_session, limit_auth, normalize_email, verify_password
 
 router = APIRouter(prefix='/api/v1/auth', tags=['authentication'])
@@ -130,17 +131,19 @@ def passport_photo(value: SecretStr) -> bytes:
 
 
 class Verify(Start):
-    verification_id: str = Field(pattern=r'^VE[a-fA-F0-9]{32}$')
+    verification_id: str = Field(pattern=r'^(?:VE|EM)[a-fA-F0-9]{32}$')
     code: str = Field(pattern=r'^[0-9]{4,10}$')
     profile: ProfileInput | None = None
 
 
 def provider_settings():
-    return (
-        os.getenv('TWILIO_VERIFY_SERVICE_SID'),
-        os.getenv('TWILIO_API_KEY_SID'),
-        os.getenv('TWILIO_API_KEY_SECRET'),
-    )
+    service = os.getenv('TWILIO_VERIFY_SERVICE_SID', '').strip()
+    key = os.getenv('TWILIO_API_KEY_SID', '').strip()
+    secret = os.getenv('TWILIO_API_KEY_SECRET', '').strip()
+    if key and secret:
+        return service, key, secret
+    return (service, os.getenv('TWILIO_ACCOUNT_SID', '').strip(),
+            os.getenv('TWILIO_AUTH_TOKEN', '').strip())
 
 
 def verify_request(endpoint: str, data: dict[str, str]) -> dict:
@@ -174,6 +177,18 @@ def otp_account(db: Session, account: User | None) -> bool:
                 and (not account.password_hash or db.get(SignupIdentity, account.id)))
 
 
+def email_provider() -> str:
+    return os.getenv('AUTH_EMAIL_PROVIDER', 'twilio').strip().lower()
+
+
+def available_channels() -> dict[str, bool]:
+    twilio = all(provider_settings())
+    return {
+        'email': smtp_ready() if email_provider() == 'smtp' else twilio,
+        'sms': twilio and os.getenv('ENABLE_SMS_VERIFICATION', '1') == '1',
+    }
+
+
 @router.post('/password')
 def password_login(body: ContactPassword, request: Request, response: Response, db: Session = Depends(get_db)):
     response.headers['Cache-Control'] = 'no-store'
@@ -189,18 +204,25 @@ def password_login(body: ContactPassword, request: Request, response: Response, 
 
 @router.get('/options')
 def auth_options():
-    otp = all(provider_settings())
+    channels = available_channels()
+    otp = any(channels.values())
     try:
         identity_cipher()
         signup = otp
     except HTTPException:
         signup = False
-    return {'demo': demo_login_enabled(), 'otp': otp, 'signup': signup}
+    return {'demo': demo_login_enabled(), 'otp': otp, 'signup': signup, 'channels': channels,
+            'default_channel': 'email' if email_provider() == 'smtp' else 'phone'}
 
 
 @router.post('/otp/start')
 def start(body: Start, request: Request, response: Response, db: Session = Depends(get_db)):
     response.headers['Cache-Control'] = 'no-store'
+    # An unavailable service must never return a pretend successful send,
+    # including the account-enumeration protection path below.
+    channel = 'email' if '@' in body.contact else 'sms'
+    if not available_channels()[channel]:
+        raise HTTPException(503, 'This verification method is not available on this server')
     if body.purpose == 'signup':
         identity_cipher()
     send_limit.check(request.client.host if request.client else 'unknown', body.contact)
@@ -208,8 +230,10 @@ def start(body: Start, request: Request, response: Response, db: Session = Depen
     # Use the same response shape for missing or unavailable accounts without sending a paid code.
     if (body.purpose == 'login' and (not otp_account(db, account))
             or body.purpose == 'signup' and account):
-        return {'verification_id': 'VE' + secrets.token_hex(16)}
-    channel = 'email' if '@' in body.contact else 'sms'
+        prefix = 'EM' if channel == 'email' and email_provider() == 'smtp' else 'VE'
+        return {'verification_id': prefix + secrets.token_hex(16)}
+    if channel == 'email' and email_provider() == 'smtp':
+        return {'verification_id': start_email(db, body.contact, body.purpose)}
     started = verify_request('Verifications', {'To': body.contact, 'Channel': channel})
     if started.get('status') != 'pending' or not re.fullmatch(r'VE[a-fA-F0-9]{32}', started.get('sid', '')):
         raise HTTPException(503, 'The verification provider could not send a code')
@@ -232,9 +256,19 @@ def verify(body: Verify, request: Request, response: Response, db: Session = Dep
     if profile is not None:
         cipher = identity_cipher()
         photo = passport_photo(profile.photo_base64)
-    result = verify_request('VerificationCheck', {'VerificationSid': body.verification_id, 'Code': body.code})
-    if result.get('status') != 'approved' or result.get('to') != body.contact:
-        raise invalid
+    channel = 'email' if '@' in body.contact else 'sms'
+    if not available_channels()[channel]:
+        raise HTTPException(503, 'This verification method is not available on this server')
+    if channel == 'email' and email_provider() == 'smtp':
+        if not body.verification_id.startswith('EM'):
+            raise invalid
+        consume_email(db, body.verification_id, body.contact, body.purpose, body.code)
+    else:
+        if not body.verification_id.startswith('VE'):
+            raise invalid
+        result = verify_request('VerificationCheck', {'VerificationSid': body.verification_id, 'Code': body.code})
+        if result.get('status') != 'approved' or result.get('to') != body.contact:
+            raise invalid
     try:
         if profile is not None:
             account = User(name=profile.name, age=profile.age, role=profile.role,

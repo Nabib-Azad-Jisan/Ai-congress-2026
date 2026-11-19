@@ -1,8 +1,10 @@
 # AgroDoctor multi-crop research screening
 
+For Groq image analysis of leaves and produce, see the [screening setup](../README.md#multi-crop-screening). This document describes the optional local leaf classifiers.
+
 Implemented locally on 17 November 2026 after approval of the multi-crop design. This replaces the active three-class tomato-only inference path. Original `ml/artifacts/model.pt`, its card/results and saved case model snapshots are retained. It does not retrain either upstream model or establish field accuracy.
 
-## What the user can do
+## Local leaf classifier workflow
 
 Choose a crop in AgroDoctor, then upload one JPG, PNG or WebP leaf photo (up to 8 MB and 20 million decoded pixels). **Screen photo** shows a preview without storing the image or adding a history entry. To save, select or create a matching owned plot and use **Screen & save observation**. The same crop catalog is available when adding plots in Farms. Results/history/CSV retain the submitted crop, plot and model version. Existing tomato cases remain readable.
 

@@ -40,6 +40,17 @@ class SignupIdentity(Base):
     encrypted_photo: Mapped[bytes] = mapped_column(LargeBinary)
 
 
+class EmailVerification(Base):
+    __tablename__ = 'email_verifications'
+    id: Mapped[str] = mapped_column(String(34), primary_key=True)
+    contact: Mapped[str] = mapped_column(String(254), index=True)
+    purpose: Mapped[str] = mapped_column(String(10))
+    code_digest: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[str] = mapped_column(String, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class Token(Base):
     __tablename__ = 'sessions'
     id: Mapped[str] = mapped_column(String, primary_key=True)

@@ -1,0 +1,23 @@
+.doctor-followup {
+  padding: 1rem 0;
+  margin: 1rem 0;
+  border-block: 1px solid var(--line);
+}
+.doctor-followup h3 { margin: 0 0 .35rem; }
+.doctor-followup p { margin: 0 0 .75rem; }
+.doctor-followup > strong {
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+}
+.doctor-followup img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 15rem;
+  object-fit: contain;
+  margin: .65rem 0;
+  border-radius: .5rem;
+}
+.doctor-followup summary { cursor: pointer; padding-block: .5rem; }

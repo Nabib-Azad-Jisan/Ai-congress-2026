@@ -63,7 +63,7 @@
   "threshold": 0.85,
   "field_validated": false,
   "version": "plantvillage-d33601185b32",
-  "artifact_sha256": "b347548a58793bc44582bda3b64474019053bfb98e0f52bf7b5a4e44c77fd385",
+  "artifact_sha256": "337516c2a39a268aa2082c9af5619c1dbf9d94a630d03eef08b67340e3b93cdb",
   "source_sha256_verified": "f1a98e77629c36b5fe90a0fbed7ba56f097ce419c6dad8456bd135f36ea8d426",
   "source_config_sha256": "2f674ba845a5cff86a893c8211a3dd40da7e74e0aa27180b3d2da374df40560f",
   "reported_metrics": null,

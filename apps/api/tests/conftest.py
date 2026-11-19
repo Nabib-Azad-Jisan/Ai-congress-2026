@@ -8,6 +8,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Tests must never inherit a checkout's live SMS credentials or database settings.
+os.environ['PYTHON_DOTENV_DISABLED'] = '1'
+os.environ.pop('GROQ_API_KEY', None)
+
 API_DIR = Path(__file__).resolve().parents[1]
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))

@@ -42,7 +42,7 @@
   "threshold": 0.85,
   "field_validated": false,
   "version": "rice-a12e09fd765e",
-  "artifact_sha256": "e1def30abf20f2a96c097099108a020ac0ed5fc5c082a7ac5d6ebfd4f358aad1",
+  "artifact_sha256": "2399925915fcf6ed7be23075b7009e1188454231ce2a051c44ffb18ffef29260",
   "source_sha256_verified": "33e38196b5726796cdaccfdfa906f8db8524b087b4d5e13d87de7a1a5e118023",
   "source_config_sha256": "71fd80b4aed421209dcefb962b3f6e6173e846a62e672fc0a629f877fd9b9325",
   "reported_metrics": null,

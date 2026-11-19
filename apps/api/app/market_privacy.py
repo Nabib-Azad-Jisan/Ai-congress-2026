@@ -2,6 +2,7 @@
 from pathlib import Path
 from sqlalchemy import delete,func,or_,select
 from .db import Reading,Record,SignupIdentity,Token,User
+from .doctor_photos import case_photo_paths
 from .market_models import Address,Auction,Audit,Bid,CartItem,Favorite,Idempotency,Notification,Order,Product,ProductImage,Profile,Report,SellerOrder
 from . import market_service as s
 
@@ -24,8 +25,7 @@ def erase_account(user,storage:Path):
         commitments=db.scalar(select(Auction.id).where(Auction.state.in_(['scheduled','live','awarded']),Auction.reserved.is_(True),or_(Auction.farmer_id==u.id,Auction.winner_id==u.id,Auction.id.in_(select(Bid.auction_id).where(Bid.customer_id==u.id)))).limit(1))
         if open_orders or commitments:s.fail(409,'Resolve open orders and auction commitments before deleting this account. No data has been deleted.')
         for case in db.scalars(select(Record).where(Record.owner_id==u.id,Record.kind=='case')):
-            filename=case.payload.get('image_file')
-            if filename:files.append(storage/Path(filename).name)
+            files.extend(case_photo_paths(storage, case.payload))
         for p in db.scalars(select(Product).where(Product.farmer_id==u.id)):
             p.status='archived';p.description='';p.pickup_instructions='';p.latitude=None;p.longitude=None;p.version+=1
             for image in db.scalars(select(ProductImage).where(ProductImage.product_id==p.id)):
