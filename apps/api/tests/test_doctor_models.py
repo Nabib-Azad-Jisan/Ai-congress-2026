@@ -123,3 +123,27 @@ def test_model_initialization_is_single_flight_and_preprocessing_matches(tmp_pat
     assert tuple(tensor.shape)==(3,224,224)
     assert float(tensor[0,0,0])==pytest.approx(1.)
     assert float(tensor[1,0,0])==pytest.approx(-1.)
+
+
+@pytest.mark.parametrize('wider_label, expected', [
+    ('Potato___Late_blight', 'Potato___Late_blight'),
+    ('Potato___Early_blight', 'unknown'),
+    ('Tomato___Late_blight', 'unknown'),
+])
+def test_low_confidence_potato_view_requires_agreement(monkeypatch, tmp_path, wider_label, expected):
+    import torch
+    from app.doctor_models import DoctorRegistry, PLANT_LABELS
+
+    registry, _ = fixture_bundle(tmp_path, monkeypatch)
+    bundle = registry._bundle('plantvillage')
+    center = torch.zeros(len(PLANT_LABELS))
+    center[PLANT_LABELS.index('Potato___Late_blight')] = 4
+    wider = torch.zeros(len(PLANT_LABELS))
+    wider[PLANT_LABELS.index(wider_label)] = 12
+    predictions = iter([center.unsqueeze(0), wider.unsqueeze(0)])
+    monkeypatch.setitem(bundle, 'model', lambda _: next(predictions))
+    monkeypatch.setattr('app.doctor_models.image_quality', lambda _: [])
+
+    result = registry.infer(Image.new('RGB', (400, 240)), 'potato')['classification']
+    assert result['top_label'] == expected
+    assert result.get('image_view') == ('full_frame' if expected != 'unknown' else None)

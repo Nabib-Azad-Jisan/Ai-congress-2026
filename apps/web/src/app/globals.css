@@ -25,10 +25,6 @@
 .account-alternative summary{cursor:pointer;color:var(--muted);padding-bottom:8px}
 @media(max-width:740px){.account-access{grid-template-columns:1fr;align-content:start;gap:18px;padding:16px}.account-brand{min-height:0;padding:24px}.account-brand h1{font-size:36px;max-width:none;margin:20px 0 6px}.account-brand p{margin-bottom:0}.account-form{padding:22px}}
 
-.account-phone{display:flex;align-items:center;gap:10px;margin:6px 0 4px}
-.account-phone > span{padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--mint);white-space:nowrap}
-.account-fields .account-phone input{margin:0;min-width:0}
-
 .account-greeting{margin:0 0 14px;font-size:clamp(18px,2vw,25px);font-weight:650;color:var(--text)}
 
 .account-identity{display:grid;gap:12px;min-width:0;margin:0;padding:14px 12px;border:1px solid var(--line);border-radius:10px}

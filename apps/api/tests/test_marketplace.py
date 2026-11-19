@@ -123,20 +123,58 @@ def test_simultaneous_orders_cannot_oversell(client,actors):
     assert statuses.count(200)==1 and all(x in [200,409,422] for x in statuses)
     assert Decimal(client.get(API+'/market/products/'+p['id']).json()['stock_quantity'])==1
 
-def test_same_market_account_can_buy_and_sell(client, actors):
-    farmer,_,_,_,_,_=actors
+def test_marketplace_buying_and_selling_require_separate_roles(client, actors):
+    farmer,_,customer,_,_,_=actors
     seller,_=account(client,'farmer','second-selling-farmer')
     offered = product(client, seller)
-    own_listing = product(client, farmer)
-    assert cart(client, farmer, own_listing['id'], '1').status_code == 403
-    assert cart(client, farmer, offered['id'], '2').status_code == 200
-    order = checkout(client, farmer, address(client, farmer), offered['id'], method='pickup')
-    assert order.status_code == 200, order.text
-    sale = order.json()['seller_orders'][0]
-    assert client.patch(API+'/market/seller-orders/'+sale['id'], headers=seller, json={'status':'confirmed'}).status_code == 200
-    for headers in (farmer, seller):
-        orders = client.get(API+'/market/orders', headers=headers).json()['items']
-        assert any(item['id'] == order.json()['id'] for item in orders)
+    lot = auction(client, seller, offered)
+    pid = offered['id']
+    assert client.get(API+'/market/farmer/dashboard', headers=farmer).status_code == 200
+    for route in ('cart', 'addresses', 'favorites', 'customer/dashboard'):
+        assert client.get(API+'/market/'+route, headers=farmer).status_code == 403
+    assert cart(client, farmer, pid, '2').status_code == 403
+    assert client.post(API+'/market/orders', headers=farmer, json={
+        'address_id':'example-address', 'quote_hash':'example-quote', 'fulfillment':{pid:'pickup'},
+    }).status_code == 403
+    assert bid(client, farmer, lot['id'], '750', 'farmer-bid').status_code == 403
+    assert client.post(API+f"/market/auctions/{lot['id']}/confirm", headers=farmer, json={
+        'address_id':'example-address', 'fulfillment':'pickup',
+    }).status_code == 403
+    assert client.post(API+'/market/products', headers=customer, json={
+        'farm_id':offered['farm_id'], 'name':'Customer potatoes', 'category':'vegetables',
+        'price_bdt':'45.00', 'unit':'kg', 'stock_quantity':'10',
+    }).status_code == 403
+    assert client.get(API+'/market/farmer/dashboard', headers=customer).status_code == 403
+    assert cart(client, customer, pid, '2').status_code == 200
+
+
+def test_former_buyer_keeps_order_history_and_loses_active_bid_eligibility(client, actors):
+    from app.db import Session, User
+    from app.market_models import Auction
+    from app import market_service
+
+    farmer,_,buyer,buyer_user,other,_=actors
+    offered = product(client, farmer)
+    pid = offered['id']
+    assert cart(client, buyer, pid, '2').status_code == 200
+    order = checkout(client, buyer, address(client, buyer), pid, method='pickup').json()
+    lot = auction(client, farmer, offered)
+    aid = lot['id']
+    assert bid(client, other, aid, '750', 'customer-bid').status_code == 200
+    assert bid(client, buyer, aid, '850', 'former-customer-bid').status_code == 200
+    with Session() as db:
+        db.get(User, buyer_user['id']).role = 'farmer'
+        db.get(Auction, aid).ends_at = market_service.stamp(market_service.clock()-timedelta(seconds=1))
+        db.commit()
+    settled = client.get(API+f'/market/auctions/{aid}', headers=other).json()
+    assert settled['state'] == 'awarded' and settled['winner_is_you']
+    assert [(row['amount_bdt'], row['eligible']) for row in settled['bids']] == [
+        ('850.00', False), ('750.00', True),
+    ]
+    assert client.get(API+'/market/orders/'+order['id'], headers=buyer).status_code == 200
+    assert client.post(API+'/market/orders/'+order['id']+'/cancel', headers=buyer, json={
+        'reason':'Cancel existing order',
+    }).status_code == 200
 
 def test_verified_product_reviews_rank_the_whole_seller(client, actors):
     seller,_,buyer,_,other,_=actors

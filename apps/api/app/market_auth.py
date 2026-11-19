@@ -130,7 +130,7 @@ def issue_session(db: Session, user: User) -> dict:
 @router.post('/register')
 def register(body: Registration, request: Request, db: Session = Depends(get_db)):
     if os.getenv('ENABLE_LEGACY_PASSWORD_SIGNUP') != '1':
-        raise HTTPException(410, 'Create your account with a verification code')
+        raise HTTPException(410, 'Create your account using the signup form')
     limit_auth(request, body.email)
     if db.scalar(select(User.id).where(User.email == body.email)):
         raise HTTPException(409, 'An account already uses this email')

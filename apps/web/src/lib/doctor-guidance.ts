@@ -12,6 +12,48 @@ const blights: CropGuide['conditions'] = {
 const orchard = 'https://content.ces.ncsu.edu/disease-and-insect-management-in-the-home-orchard';
 const vegetables = 'https://extension.rutgers.edu/fs1124';
 
+export const potatoFieldChecks = [
+  {
+    en: {
+      title: 'Upward-rolling leaves · potato leafroll',
+      signs: 'Check whether several leaflets roll upward and whether the plant is unusually upright or stunted. Compare it with a nearby healthy-looking plant.',
+      action: 'Photograph the whole plant and the stem at soil level. Ask an extension officer to distinguish leafroll from stem disease or growing stress.',
+    },
+    bn: {
+      title: 'পাতা ওপরের দিকে গুটিয়ে যাওয়া · আলুর পাতা মোড়ানো রোগ',
+      signs: 'একাধিক পত্রক ওপরের দিকে গুটিয়েছে কি না এবং গাছ অস্বাভাবিকভাবে খাড়া বা খাটো কি না দেখুন। পাশের সুস্থ দেখায় এমন গাছের সঙ্গে তুলনা করুন।',
+      action: 'পুরো গাছ ও মাটির কাছের কাণ্ডের ছবি তুলুন। পাতা মোড়ানো রোগ, কাণ্ডের রোগ ও পরিবেশগত চাপ আলাদা করতে কৃষি কর্মকর্তার সাহায্য নিন।',
+    },
+    source: 'https://ipm.ucanr.edu/agriculture/potato/leafroll/',
+  },
+  {
+    en: {
+      title: 'Patchy light and dark green · virus-like mosaic',
+      signs: 'Look for irregular light and dark green patches and puckering on several leaves.',
+      action: 'Photograph affected and healthy-looking leaves. Ask an extension officer whether a lab test is needed to tell viruses such as PVY and PVX apart.',
+    },
+    bn: {
+      title: 'হালকা ও গাঢ় সবুজ ছোপ · ভাইরাসের মতো মোজাইক লক্ষণ',
+      signs: 'কয়েকটি পাতায় অনিয়মিত হালকা ও গাঢ় সবুজ ছোপ এবং কুঁচকে যাওয়া আছে কি না দেখুন।',
+      action: 'আক্রান্ত ও সুস্থ দেখায় এমন পাতার ছবি তুলুন। PVY ও PVX-এর মতো ভাইরাস আলাদা করতে পরীক্ষাগারের পরীক্ষা দরকার কি না কৃষি কর্মকর্তাকে জিজ্ঞেস করুন।',
+    },
+    source: 'https://ipm.ucanr.edu/agriculture/potato/Mosaic-Diseases-Caused-By-Potyviruses/',
+  },
+  {
+    en: {
+      title: 'Wilting with a black stem base · blackleg',
+      signs: 'Look for a black patch on the stem where it meets the soil, especially if the leaves are also yellowing or wilting.',
+      action: 'Take a close-up of the stem base and a photo of the whole plant. Arrange an extension review if several plants are wilting.',
+    },
+    bn: {
+      title: 'গাছ ঢলে পড়া ও কাণ্ডের গোড়া কালো · ব্ল্যাকলেগ',
+      signs: 'মাটির ঠিক ওপরে কাণ্ডে কালো দাগ আছে কি না দেখুন, বিশেষ করে পাতা হলুদ হলে বা গাছ ঢলে পড়লে।',
+      action: 'কাণ্ডের গোড়ার কাছ থেকে এবং পুরো গাছের ছবি তুলুন। কয়েকটি গাছ ঢলে পড়লে কৃষি কর্মকর্তার সাহায্য নিন।',
+    },
+    source: 'https://extension.umaine.edu/publications/2493e/',
+  },
+];
+
 export const cropGuides: Record<string, CropGuide> = {
   apple: {
     inspect: 'Compare spots on leaves with marks on fruit. Look for olive patches, orange spots, or rings.',

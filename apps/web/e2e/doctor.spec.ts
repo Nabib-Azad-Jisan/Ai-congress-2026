@@ -7,8 +7,8 @@ test('catalog, plot creation, crop identity and stale upload protection',async({
  const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
  await page.goto('/en/agrodoctor');
  await expect(page.getByLabel('Screening crop',{exact:true})).toBeEnabled();
- await expect(page.getByLabel('Screening crop',{exact:true}).locator('option')).toHaveCount(12);
- for(const crop of ['potato','maize','rice']){
+ await expect(page.getByLabel('Screening crop',{exact:true}).locator('option')).toHaveCount(2);
+ for(const crop of ['potato']){
   await page.getByLabel('Screening crop',{exact:true}).selectOption(crop);
   await page.getByLabel('New crop plot name',{exact:true}).fill(crop+' test plot');
   await page.getByRole('button',{name:'Create crop plot'}).click();
@@ -46,7 +46,7 @@ test('non-tomato crops can be screened without creating a plot',async({page,requ
  await page.addInitScript(token=>localStorage.setItem('agrosphere-token',token),session.token);
  await page.goto('/en/agrodoctor');
  await expect(page.getByLabel('Screening crop',{exact:true})).toHaveValue('tomato');
- for(const crop of ['potato','rice']){
+ for(const crop of ['potato']){
   await page.getByLabel('Screening crop',{exact:true}).selectOption(crop);
   await page.getByLabel('Upload leaf photo',{exact:true}).setInputFiles(photo);
   const scanned=page.waitForResponse(response=>response.url().endsWith('/doctor/cases')&&response.request().method()==='POST');
@@ -55,6 +55,15 @@ test('non-tomato crops can be screened without creating a plot',async({page,requ
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({crop});
   await expect(page.getByRole('region',{name:'Screening result'})).toContainText('Screening preview');
+  if(crop==='potato'){
+   const result=page.getByRole('region',{name:'Screening result'});
+   await expect(result.getByRole('heading',{name:'Compare these symptoms on the plant'})).toBeVisible();
+   await expect(result.getByText('Look for dark, irregular patches',{exact:false})).toBeVisible();
+   await result.getByText('Check for other potato leaf problems').click();
+   await expect(result.getByRole('heading',{name:/potato leafroll/})).toBeVisible();
+   await expect(result.getByRole('heading',{name:/virus-like mosaic/})).toBeVisible();
+   await expect(result.getByRole('heading',{name:/blackleg/})).toBeVisible();
+  }
  }
  const history=await request.get(api+'/doctor/cases',{headers});
  expect((await history.json()).total).toBe(0);
@@ -118,12 +127,12 @@ test('delayed plot creation respects a newer selected plot',async({page,request}
  const session=await (await request.post(api+'/auth/demo',{data:{}})).json();
  const headers={Authorization:'Bearer '+session.token};
  const farms=await (await request.get(api+'/farms',{headers})).json();
- const second=await (await request.post(api+'/plots',{headers,data:{farm_id:farms[0].id,name:'Other potato plot',crop:'potato',area_acres:'1'}})).json();
+ const second=await (await request.post(api+'/plots',{headers,data:{farm_id:farms[0].id,name:'Other rice plot',crop:'rice',area_acres:'1'}})).json();
  await page.addInitScript(token=>localStorage.setItem('agrosphere-token',token),session.token);
  await page.goto('/en/agrodoctor');
  await page.getByLabel('Select plot',{exact:true}).selectOption(session.plot_id);
- await page.getByLabel('Screening crop',{exact:true}).selectOption('rice');
- await page.getByLabel('New crop plot name',{exact:true}).fill('Delayed rice plot');
+ await page.getByLabel('Screening crop',{exact:true}).selectOption('potato');
+ await page.getByLabel('New crop plot name',{exact:true}).fill('Delayed potato plot');
  let started=false;
  await page.route('**/api/v1/plots',async route=>{
   if(route.request().method()!=='POST')return route.continue();
@@ -136,7 +145,8 @@ test('delayed plot creation respects a newer selected plot',async({page,request}
  await page.getByLabel('Select plot',{exact:true}).selectOption(second.id);
  await page.waitForTimeout(1800);
  await expect(page.getByLabel('Select plot',{exact:true})).toHaveValue(second.id);
- await expect(page.getByLabel('Screening crop',{exact:true})).toHaveValue('potato');
+ await expect(page.getByLabel('Screening crop',{exact:true})).toHaveValue('tomato');
+ await expect(page.getByLabel('Screening plot',{exact:true})).toHaveValue('');
 });
 
 test('photo controls wait for the initial owned plot',async({page,request})=>{
@@ -151,7 +161,7 @@ test('photo controls wait for the initial owned plot',async({page,request})=>{
 });
 
 
-test('vision screens an unlisted crop and shows the evidence without a plot', async ({page, request}) => {
+test('vision offers only tomato and potato and shows evidence without a plot', async ({page, request}) => {
  const session = await (await request.post(api+'/auth/demo', {data:{}})).json();
  await page.addInitScript(token => localStorage.setItem('agrosphere-token', token), session.token);
  await page.route('**/doctor/capabilities', async route => {
@@ -162,10 +172,10 @@ test('vision screens an unlisted crop and shows the evidence without a plot', as
  await page.route('**/doctor/cases', async route => {
   if (route.request().method() !== 'POST') return route.continue();
   const form = route.request().postDataBuffer()?.toString('latin1') || '';
-  expect(form).toContain('name="crop"\r\n\r\nauto');
+  expect(form).toContain('name="crop"\r\n\r\npotato');
   expect(form).not.toContain('name="plot_id"');
   await route.fulfill({json:{
-   crop:'auto', classification:{top_label:'Possible internal decay'}, model:{version:'test-vision'},
+   crop:'potato', classification:{top_label:'Possible internal decay'}, model:{version:'test-vision'},
    assessment:{subject:'Potato tuber', outcome:'possible_condition', condition:'Possible internal decay',
     signs:['Dark patches under the skin.'], explanation, uncertainty:'The cause is unresolved.'},
    advice:['Check the rest of the batch.']
@@ -173,7 +183,11 @@ test('vision screens an unlisted crop and shows the evidence without a plot', as
  });
  await page.goto('/en/agrodoctor');
  await expect(page.getByLabel('Screening plot', {exact:true})).toHaveValue(session.plot_id);
- await page.getByLabel('Screening crop', {exact:true}).selectOption('auto');
+ const crops=page.getByLabel('Screening crop', {exact:true});
+ await expect(crops.locator('option')).toHaveCount(2);
+ await expect(crops.locator('option[value="tomato"]')).toHaveCount(1);
+ await expect(crops.locator('option[value="potato"]')).toHaveCount(1);
+ await crops.selectOption('potato');
  await expect(page.getByText(/Screening sends this photo to Groq/)).toBeVisible();
  await page.getByLabel('Upload crop photo', {exact:true}).setInputFiles(photo);
  await page.getByRole('button', {name:'Screen photo', exact:true}).click();

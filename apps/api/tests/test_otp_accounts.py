@@ -45,7 +45,7 @@ def test_account_sid_and_auth_token_can_send_verification(client, monkeypatch):
     monkeypatch.setattr(otp_auth.httpx, 'post', provider_post)
     assert client.get('/api/v1/auth/options').json()['signup'] is True
     response = client.post('/api/v1/auth/otp/start', json={
-        'contact': '01712345678', 'purpose': 'signup',
+        'contact': '+8801712345678', 'purpose': 'signup',
     })
     assert response.status_code == 200
     assert response.json()['verification_id'] == 'VE' + 'd' * 32
@@ -73,8 +73,7 @@ def test_otp_signup_login_and_role_permissions(client, monkeypatch):
     monkeypatch.setattr(otp_auth, 'send_limit', otp_auth.AuthLimiter())
     monkeypatch.setattr(otp_auth, 'check_limit', otp_auth.AuthLimiter())
     base = '/api/v1'
-    headers = {}
-    for contact, role in [('01712345678', 'farmer'), ('Customer@Gmail.com', 'customer')]:
+    for contact, role in [('+8801712345678', 'farmer'), ('Customer@Gmail.com', 'customer')]:
         body = {'contact': contact, 'purpose': 'signup'}
         sid = client.post(base+'/auth/otp/start', json=body).json()['verification_id']
         profile = {
@@ -85,6 +84,15 @@ def test_otp_signup_login_and_role_permissions(client, monkeypatch):
             'password': 'correct horse battery', 'confirm_password': 'correct horse battery',
         }
         verify = body | {'verification_id': sid, 'code': '000000', 'profile': profile}
+        for candidate in ('0123456789', '0123456789012', '০১২৩৪৫৬৭৮৯০১২৩৪৫৬'):
+            validated = otp_auth.ProfileInput.model_validate(profile | {'national_id': candidate})
+            assert validated.national_id.get_secret_value() == candidate.translate(otp_auth.BANGLA_DIGITS)
+        for candidate in ('123456789', '12345678901', '123456789012345678', '123456789A', ' 1234567890', '12345 67890'):
+            invalid = client.post(base+'/auth/otp/verify', json=verify | {
+                'profile': profile | {'national_id': candidate},
+            })
+            assert invalid.status_code == 422
+            assert 'national_id' in invalid.json()['message'] and candidate not in invalid.text
         bad_password = profile | {'confirm_password': 'mismatched password'}
         rejected = client.post(base+'/auth/otp/verify', json=verify | {'profile': bad_password})
         assert rejected.status_code == 422
@@ -100,11 +108,11 @@ def test_otp_signup_login_and_role_permissions(client, monkeypatch):
         sid = client.post(base+'/auth/otp/start', json=login).json()['verification_id']
         verified = client.post(base+'/auth/otp/verify', json=login | {'verification_id':sid,'code':'123456'})
         assert verified.status_code == 200, verified.text
-        headers[role] = {'Authorization': 'Bearer ' + verified.json()['token']}
-        own = client.get(base+'/me', headers=headers[role]).json()
+        headers = {'Authorization': 'Bearer ' + verified.json()['token']}
+        own = client.get(base+'/me', headers=headers).json()
         assert own['age'] == 27 and own['gender'] == 'female'
         assert 'national_id' not in own and 'permanent_address' not in own
-        photo = client.get(base+'/me/signup-photo', headers=headers[role])
+        photo = client.get(base+'/me/signup-photo', headers=headers)
         assert photo.status_code == 200 and photo.headers['content-type'] == 'image/jpeg'
         password = client.post(base+'/auth/password', json={'contact':contact,'password':profile['password']})
         assert password.status_code == 200
@@ -119,10 +127,13 @@ def test_otp_signup_login_and_role_permissions(client, monkeypatch):
             ('+8801712345678', None) if role == 'farmer' else (None, 'customer@gmail.com')
         )
 
-    for role, status in [('farmer', 200), ('customer', 403)]:
-        assert client.get(base+'/doctor/cases', headers=headers[role]).status_code == status
-        assert client.get(base+'/market/farmer/dashboard', headers=headers[role]).status_code == status
-        assert client.get(base+'/market/cart', headers=headers[role]).status_code == 200
+        for session in (signup, verified, password):
+            session_headers = {'Authorization': 'Bearer ' + session.json()['token']}
+            seller_status = 200 if role == 'farmer' else 403
+            buyer_status = 200 if role == 'customer' else 403
+            assert client.get(base+'/doctor/cases', headers=session_headers).status_code == seller_status
+            assert client.get(base+'/market/farmer/dashboard', headers=session_headers).status_code == seller_status
+            assert client.get(base+'/market/cart', headers=session_headers).status_code == buyer_status
 
 def test_bangladesh_phone_length_and_email(client, monkeypatch):
     monkeypatch.setenv('SIGNUP_DATA_KEY', Fernet.generate_key().decode())
@@ -135,13 +146,13 @@ def test_bangladesh_phone_length_and_email(client, monkeypatch):
     monkeypatch.setattr(otp_auth, 'verify_request', fake_provider)
     monkeypatch.setattr(otp_auth, 'send_limit', otp_auth.AuthLimiter())
     url = '/api/v1/auth/otp/start'
-    for invalid in ('+880171234567', '+88017123456789', '+12025550123', '+880171234567x'):
+    for invalid in ('+880171234567', '+88017123456789', '01712345678', '8801712345678',
+                    '+88017123 45678', '+88017123-45678', '+12025550123', '+880171234567x'):
         assert client.post(url, json={'contact': invalid, 'purpose': 'signup'}).status_code == 422
     assert sent == []
     for valid, destination in [
-        ('01712345678', '+8801712345678'),
         ('+8801712345678', '+8801712345678'),
-        ('০১৭১২৩৪৫৬৭৮', '+8801712345678'),
+        ('+৮৮০১৭১২৩৪৫৬৭৮', '+8801712345678'),
         ('Customer@Gmail.com', 'customer@gmail.com'),
     ]:
         assert client.post(url, json={'contact': valid, 'purpose': 'signup'}).status_code == 200

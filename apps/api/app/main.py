@@ -609,7 +609,7 @@ def ready(request: Request, db: Db):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, error: RequestValidationError):
-    if request.url.path in {'/api/v1/auth/otp/start', '/api/v1/auth/otp/verify', '/api/v1/auth/password'}:
+    if request.url.path in {'/api/v1/auth/otp/start', '/api/v1/auth/otp/verify', '/api/v1/auth/password', '/api/v1/auth/signup'}:
         first = error.errors()[0]
         field = first['loc'][-1]
         return JSONResponse(status_code=422, content={'message': f"{field}: {first['msg']}"},

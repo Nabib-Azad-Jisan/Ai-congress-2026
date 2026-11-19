@@ -22,7 +22,10 @@ def test_multi_seller_totals_private_groups_and_cancellation_once(client,actors)
     o=r.json();assert o['total_bdt']=='203.53' and len(o['seller_orders'])==2
     seller=client.get(API+'/market/orders/'+o['id'],headers=f).json();assert len(seller['seller_orders'])==1 and seller['total_bdt']=='185.00'
     pickup=next(s for s in o['seller_orders'] if s['fulfillment']=='pickup');assert 'line1' not in pickup['destination']
-    assert client.get(API+'/market/addresses',headers=f).json()==[]
+    dest=pickup['destination']
+    assert (dest['ordered_by'],dest['contact_name'],dest['customer_district'],dest['district'])==('customer','Buyer','Dhaka','Gazipur')
+    assert seller['seller_orders'][0]['destination']['line1']==a['line1']
+    assert client.get(API+'/market/addresses',headers=f).status_code==403
     for _ in range(2):assert client.post(API+'/market/orders/'+o['id']+'/cancel',headers=c,json={'reason':'Changed plans'}).status_code==200
     assert client.get(API+'/market/products/'+p['id']).json()['stock_quantity']=='100.000'
     assert client.get(API+'/market/products/'+p2['id']).json()['stock_quantity']=='100.000'

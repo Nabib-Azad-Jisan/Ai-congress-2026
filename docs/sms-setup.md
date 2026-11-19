@@ -29,7 +29,7 @@ cd apps/api
 ..\..\.venv\Scripts\python.exe -m app.market_worker
 ```
 
-Then open the app, select **Sign up**, enter your details and phone number, and request a real verification code. With the fixed `+880` prefix, enter the remaining 10 digits starting with `1`. Sign-in codes only go to existing eligible accounts; responses intentionally do not reveal whether a contact is registered. Codes are checked by Twilio before a new account/session is committed to the database.
+Then open the app, select **Sign up**, enter your details and phone number, and request a real verification code. Enter the full number, for example `+8801712345678`, with exactly 14 characters including the leading `+`. Sign-in codes go only to existing eligible accounts. The response is the same whether a contact is registered. Twilio checks the code before the app saves the account or session.
 
 Email is a separate channel and additionally requires Twilio Verify's SendGrid integration. Configuring SMS credentials alone does not prove email delivery. Hosted or Docker services need the same settings injected into the API environment; do not upload the private local `.env` with source code.
 

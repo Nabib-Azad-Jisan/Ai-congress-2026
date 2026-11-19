@@ -4,7 +4,7 @@ import type {Page} from '@playwright/test';
 const api = process.env.E2E_API_URL || 'http://127.0.0.1:8300/api/v1';
 const image = {name:'crop.png', mimeType:'image/png', buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')};
 const first = {
-  crop:'auto', screening_locale:'en', photo_count:1, model:{version:'test-vision'},
+  crop:'potato', screening_locale:'en', photo_count:1, model:{version:'test-vision'},
   classification:{abstained:false, top_label:'Possible internal decay'},
   assessment:{subject:'Potato tuber', part:'produce', crop_match:'unknown',
     outcome:'possible_condition', condition:'Possible internal decay', produce_finding:'internal_breakdown',
@@ -45,7 +45,7 @@ test('reported answers, Bangla referral and follow-up survive an unsuccessful pr
   });
   await page.goto('/en/agrodoctor');
   await expect(page.getByLabel('Screening plot',{exact:true})).toHaveValue(session.plot_id);
-  await page.getByLabel('Screening crop',{exact:true}).selectOption('auto');
+  await page.getByLabel('Screening crop',{exact:true}).selectOption('potato');
   await page.getByRole('radio',{name:'Fruit, vegetable or tuber'}).check();
   await page.getByRole('radio',{name:'In storage'}).check();
   await page.getByRole('radio',{name:'Many items'}).check();

@@ -1,3 +1,13 @@
+## Seller order details and potato screening · 19 November 2026
+
+Seller Studio shows the three most recent orders and links to the full history. New pickup orders snapshot the customer’s area and district separately from the farm pickup area. Older pickup orders have no stored customer area. Farmer navigation includes a direct call to the [Bangladesh Agriculture Call Centre](https://ais.gov.bd/pages/static-pages/6922df5e933eb65569e21833).
+
+Two local potato screenings of the same uploaded image passed image quality checks and produced the same crop mismatch. The highest class was tomato late blight at 0.547. The highest potato class scored 0.0074. These are uncalibrated model outputs. The result and the action card now explain the mismatch. The field photo’s disease has no confirmed label.
+
+## Password signup and marketplace access · 19 November 2026
+
+The home and marketplace forms accept a phone number or email and a password. Signup stores the chosen farmer or customer role with the private profile. Farmers publish listings and fulfill orders. Customers browse published listings and place orders. The existing NID, phone, and private photo checks apply at signup. A stable `SIGNUP_DATA_KEY` is required for private profile storage. Contact ownership is not checked during password signup.
+
 ## KrishiMarket district prices · 19 November 2026
 
 The seller listing form shows 30 days of KrishiMarket prices for the chosen crop, listing district and unit in Bangla and English. Each figure needs three observations. The card shows separate counts for current eligible asking prices and seller-confirmed orders, and links to the Department of Agricultural Marketing's official reports. Grams convert to kilograms. Pieces, bundles and crates have their own figures. Each checkout contributes at most one agreed price per crop, district and comparable unit. A later edit to the listing leaves the order price intact. [Official market reports](https://market.dam.gov.bd/market_daily_price_report)
@@ -39,7 +49,7 @@ Set a stable Fernet key as `SIGNUP_DATA_KEY` in the API service environment befo
 
 The locale home opens with sign-in. New accounts verify a phone number or email and supply a name, age, and role. Farmer accounts can sell, buy, and use AgroDoctor. Customer accounts can buy and use shared features. Existing sellers with listings are carried forward as farmers when the new account schema is applied. Existing password accounts and provisioned admins continue to sign in through the password option.
 
-The Bangladesh mobile field supplies the prefix +880 and requires exactly ten remaining digits starting with 1. The API normalizes 11-digit local numbers beginning with 01 to that format. Email sign-in is also available.
+The account form requires the full Bangladesh mobile number, with exactly 14 characters including the leading `+` and the `880` country code. The national ID field accepts exactly 10, 13, or 17 digits. Both checks run in the browser and the authentication API. English and Bangla numerals are accepted and stored in the same digit format. Email sign-in is also available.
 
 Real OTP delivery requires a configured Twilio Verify service. SMS routes through Twilio Verify and email requires its SendGrid integration. Set `TWILIO_VERIFY_SERVICE_SID`, `TWILIO_API_KEY_SID`, and `TWILIO_API_KEY_SECRET` on the FastAPI service. On Render, set these in the API service's Environment settings and redeploy the API. Configure SMS for the destination countries and an authenticated SendGrid sender for email. Keep these values out of Netlify and GitHub. Runtime demo sign-in defaults to enabled locally and disabled on the hosted service. Legacy password registration is disabled by default and remains available to browser/automation fixtures via `ENABLE_LEGACY_PASSWORD_SIGNUP=1` in an isolated environment.
 
@@ -151,3 +161,20 @@ The backend uses the existing private Groq configuration for language understand
 Bangladesh Agro-Meteorological Information Service bulletins carry issue dates and coverage periods. Regional crop calendar PDFs are season references. Open-Meteo requires consented farm coordinates. Price lookup supports the farmer's recorded commodity, date, trade type and market. DAM's public report requires a selected market, date and trade type, so the assistant links the official report when a matching daily price cannot be verified. Photo screening and conversational smoke tests do not establish field accuracy.
 
 Verification covered 230 API tests, 90 frontend unit tests, 40 Edge browser tests, TypeScript, and the production web build. All 53 chat-specific API tests also passed after tightening observation detection. Lint reported nine existing warnings. Live browser checks used disposable farm accounts, a tomato leaf and a cut potato. Additional checks exercised a second potato photo, a Bengali case note and editable adviser summary, a dated Gazipur bulletin, a regional calendar, and a buyer comparison recalculated after a fare change. The provider rate-limited one follow-up photo request; a later retry succeeded.
+
+
+## Tomato and potato leaf screening
+
+For a low-confidence tomato or potato disease candidate, the local classifier checks a full-frame view for damage that the standard center crop can omit. The full-frame result must independently meet the existing screening threshold and agree with the original candidate. An uncertain result shows symptom comparisons and management steps on the result card. These changes were exercised with controlled model outputs and browser fixtures. Field accuracy and the original uploaded photos remain unverified.
+
+The AgroDoctor upload dropdown offers tomato and potato. When a different plot crop is active, the form defaults to a tomato preview and requires a matching plot to save the result. The API crop catalog still describes the underlying models.
+
+### Additional potato leaf checks
+
+Potato leaf results now include English and Bangla field checks for leafroll, virus-like mosaic, and blackleg. Groq Vision, when configured, receives potato-specific instructions for the same patterns. Curling alone cannot confirm leafroll, mosaic cannot distinguish PVY from PVX, and suspected blackleg needs a stem-base view. The offline classifier still supports healthy, early blight, and late blight labels.
+
+The CC BY 4.0 [Banu and Deb field-photo archive](https://data.mendeley.com/datasets/d5b3fzpw3g/1) (version 1, SHA-256 `549c7f3343422fa2b77b6fb2c5009a52215aa00626b2646435ba19f4826f8192`) contains 84 files named `orig_*` and 2,267 named `aug_*`. The augmented filenames do not identify a source leaf. An exploratory offline check excluded all augmented files and skipped 12 byte-for-byte duplicates. The current classifier abstained on all 72 retained photos (69 crop mismatches and 3 low-confidence results), including 20 late blight and 4 healthy images. The archive contains no early blight class. No weights were trained or changed, and this small single-source check does not establish field accuracy.
+
+### Marketplace role separation
+
+Marketplace buying tools are for customer accounts and selling tools are for farmer accounts. The UI gates buyer routes and the API checks the stored role for cart, checkout, bids, award confirmation, and customer tools. Earlier orders remain accessible to their participants. Active auction bids from farmer accounts are ineligible, and an ineligible unconfirmed award releases the reserved stock. Browser testing uses separate local storage and a disposable SQLite database with test signup enabled.

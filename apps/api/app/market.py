@@ -61,17 +61,17 @@ def farmer_profile(id:str):
 @router.get('/market/addresses')
 def addresses(user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);return [s.address_view(a) for a in db.scalars(select(Address).where(Address.user_id==user.id))]
+        s.actor(db,user,['customer']);return [s.address_view(a) for a in db.scalars(select(Address).where(Address.user_id==user.id))]
 @router.post('/market/addresses')
 def add_address(body:AddressCreate,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer'])
+        u=s.actor(db,user,['customer'])
         if db.scalar(select(func.count()).select_from(Address).where(Address.user_id==user.id))>=20:s.fail(422,'Maximum20 saved addresses')
         a=Address(user_id=user.id,**body.model_dump());db.add(a);db.flush();s.audit(db,u,'address.created','address',a.id);return s.address_view(a)
 @router.delete('/market/addresses/{id}')
 def delete_address(id:str,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);a=s.owned(db,Address,id,user,'user_id');db.delete(a);return {'ok':True}
+        s.actor(db,user,['customer']);a=s.owned(db,Address,id,user,'user_id');db.delete(a);return {'ok':True}
 
 @router.get('/market/nearby')
 @router.get('/market/products')
@@ -220,11 +220,11 @@ def remove_image(id:str,image_id:str,user:Who):
 
 @router.get('/market/cart')
 def cart(user:Who):
-    with s.transaction() as db:s.actor(db,user,['customer','farmer']);s.tick(db);return s.cart_view(db,user)
+    with s.transaction() as db:s.actor(db,user,['customer']);s.tick(db);return s.cart_view(db,user)
 @router.post('/market/cart/items')
 def add_cart(body:CartCommand,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);s.enabled(db);s.tick(db);p=get_product(db,body.product_id,user)
+        s.actor(db,user,['customer']);s.enabled(db);s.tick(db);p=get_product(db,body.product_id,user)
         if p.farmer_id==user.id:s.fail(403,'You cannot buy your own listing')
         if not s.listing_eligible(db,p):s.fail(409,'Listing unavailable')
         s.check_quantity(p,body.quantity)
@@ -237,15 +237,15 @@ def add_cart(body:CartCommand,user:Who):
 @router.patch('/market/cart/items/{id}')
 def edit_cart(id:str,body:QuantityPatch,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);row=s.owned(db,CartItem,id,user,'customer_id');p=get_product(db,row.product_id,user);s.check_quantity(p,body.quantity);row.quantity=body.quantity;db.flush();return s.cart_view(db,user)
+        s.actor(db,user,['customer']);row=s.owned(db,CartItem,id,user,'customer_id');p=get_product(db,row.product_id,user);s.check_quantity(p,body.quantity);row.quantity=body.quantity;db.flush();return s.cart_view(db,user)
 @router.delete('/market/cart/items/{id}')
 def remove_cart(id:str,user:Who):
-    with s.transaction() as db:s.actor(db,user,['customer','farmer']);db.delete(s.owned(db,CartItem,id,user,'customer_id'));return {'ok':True}
+    with s.transaction() as db:s.actor(db,user,['customer']);db.delete(s.owned(db,CartItem,id,user,'customer_id'));return {'ok':True}
 
 @router.post('/market/orders')
 def checkout(body:Checkout,user:Who,idempotency_key:Idem=None):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer']);s.enabled(db);s.tick(db)
+        u=s.actor(db,user,['customer']);s.enabled(db);s.tick(db)
         def run():
             s.rate(db,u,'order.created',10);cart=s.cart_view(db,u)
             if body.quote_hash!=cart['quote_hash']:s.fail(409,'Cart price, stock or terms changed. Review the updated quote before checkout.')
@@ -353,18 +353,17 @@ class BidCommand(Command):
 @router.post('/market/auctions/{id}/bids')
 def bid(id:str,body:BidCommand,user:Who,idempotency_key:Idem=None):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer']);s.enabled(db);s.tick(db)
+        u=s.actor(db,user,['customer']);s.enabled(db);s.tick(db)
         def run():
             a=get_auction(db,id,u)
             if not body.confirm:s.fail(422,'Explicitly confirm your bid')
-            if a.farmer_id==u.id:s.fail(403,'Self-bidding is forbidden')
             if a.state!='live' or not a.reserved or not a.starts_at<=s.stamp(s.clock())<a.ends_at:s.fail(409,'Auction is not accepting bids')
             p=db.get(Product,a.product_id)
             if not s.listing_eligible(db,p):s.fail(409,'Listing unavailable')
             minimum=a.highest_bid_bdt+a.minimum_increment_bdt if a.highest_bid_bdt is not None else a.starting_bid_bdt
             if body.amount_bdt<minimum:s.fail(422,'Bid must be at least BDT'+s.m(minimum))
             s.rate(db,u,'auction.bid',s.policy(db)['max_bids_per_minute'])
-            previous=db.scalar(select(Bid).join(User,User.id==Bid.customer_id).where(Bid.auction_id==id,User.is_active.is_(True)).order_by(Bid.amount_bdt.desc()).limit(1))
+            previous=s.highest_customer_bid(db,id)
             if previous and previous.customer_id==u.id:s.fail(409,'You already hold the highest bid')
             row=Bid(auction_id=id,customer_id=u.id,amount_bdt=body.amount_bdt);db.add(row);a.highest_bid_bdt=body.amount_bdt
             if previous:s.notify(db,previous.customer_id,'You were outbid','auction',id)
@@ -376,7 +375,7 @@ class WinnerCommand(Command):
 @router.post('/market/auctions/{id}/confirm')
 def confirm_lot(id:str,body:WinnerCommand,user:Who,idempotency_key:Idem=None):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer']);s.enabled(db);s.tick(db)
+        u=s.actor(db,user,['customer']);s.enabled(db);s.tick(db)
         def run():
             a=get_auction(db,id,u)
             if a.state!='awarded' or not a.reserved or a.winner_id!=u.id or a.confirmation_deadline<=s.stamp(s.clock()):s.fail(409,'Only the eligible winner can confirm before the deadline')
@@ -387,18 +386,18 @@ def confirm_lot(id:str,body:WinnerCommand,user:Who,idempotency_key:Idem=None):
 @router.get('/market/favorites')
 def favorites(user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);rows=db.scalars(select(Product).join(Favorite,Favorite.product_id==Product.id).where(Favorite.customer_id==user.id))
+        s.actor(db,user,['customer']);rows=db.scalars(select(Product).join(Favorite,Favorite.product_id==Product.id).where(Favorite.customer_id==user.id))
         return [s.product_view(db,p,user) for p in rows if s.can_view(db,p,user)]
 @router.post('/market/favorites/{id}')
 def favorite(id:str,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);get_product(db,id,user)
+        s.actor(db,user,['customer']);get_product(db,id,user)
         if not db.get(Favorite,(user.id,id)):db.add(Favorite(customer_id=user.id,product_id=id))
         return {'ok':True}
 @router.delete('/market/favorites/{id}')
 def unfavorite(id:str,user:Who):
     with s.transaction() as db:
-        s.actor(db,user,['customer','farmer']);row=db.get(Favorite,(user.id,id))
+        s.actor(db,user,['customer']);row=db.get(Favorite,(user.id,id))
         if row:db.delete(row)
         return {'ok':True}
 @router.get('/market/notifications')
@@ -425,7 +424,7 @@ def report_market(body:ReportCommand,user:Who):
 @router.post('/market/reviews')
 def add_review(body:ReviewCommand,user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer']);so=db.get(SellerOrder,body.seller_order_id);o=db.get(Order,so.order_id) if so else None
+        u=s.actor(db,user,['customer']);so=db.get(SellerOrder,body.seller_order_id);o=db.get(Order,so.order_id) if so else None
         if not so or not o or o.customer_id!=u.id:s.fail(404,'Order not found')
         if so.status!='delivered' or not db.scalar(select(OrderItem.id).where(OrderItem.seller_order_id==so.id,OrderItem.product_id==body.product_id)):s.fail(422,'Review only an item from your delivered order')
         if db.scalar(select(Review.id).where(Review.customer_id==u.id,Review.product_id==body.product_id,Review.seller_order_id==so.id)):s.fail(409,'This delivered item already has your review')
@@ -452,7 +451,7 @@ def market_notification_views(db,u):
 @router.get('/market/customer/dashboard')
 def customer_dashboard(user:Who):
     with s.transaction() as db:
-        u=s.actor(db,user,['customer','farmer']);s.tick(db);os=list(db.scalars(select(Order).where(Order.customer_id==u.id).order_by(Order.created_at.desc())))
+        u=s.actor(db,user,['customer']);s.tick(db);os=list(db.scalars(select(Order).where(Order.customer_id==u.id).order_by(Order.created_at.desc())))
         bs=list(db.scalars(select(Bid).where(Bid.customer_id==u.id).order_by(Bid.created_at.desc())));wins=list(db.scalars(select(Auction).where(Auction.winner_id==u.id,Auction.state=='awarded',Auction.reserved.is_(True))))
         fs=list(db.scalars(select(Product).join(Favorite,Favorite.product_id==Product.id).where(Favorite.customer_id==u.id)))
         return {'profile':s.profile_view(s.profile(db,u),u),'orders':[s.order_view(db,o,u) for o in os],

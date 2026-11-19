@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageFilter, ImageStat
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 from . import doctor_vision
 from .services import ModelBrokenError
 
@@ -120,10 +120,12 @@ class DoctorRegistry:
                     raise ValueError('Model output shape/values are invalid')
                 prep = spec['preprocessing']
                 interpolation = transforms.InterpolationMode.BICUBIC if prep['interpolation']=='bicubic' else transforms.InterpolationMode.BILINEAR
+                normalize = transforms.Compose([transforms.ToTensor(), transforms.Normalize(prep['mean'], prep['std'])])
                 transform = transforms.Compose([transforms.Resize(prep['resize'], interpolation=interpolation),
-                    transforms.CenterCrop(prep['crop']), transforms.ToTensor(), transforms.Normalize(prep['mean'],prep['std'])])
+                    transforms.CenterCrop(prep['crop']), normalize])
                 entry = {'card':{**base, **card, 'metrics':None, 'available':True, 'artifact_status':'ready',
-                    'field_validated':False,'artifact_error':None}, 'model':model,'transform':transform}
+                    'field_validated':False,'artifact_error':None}, 'model':model,'transform':transform,
+                    'normalize':normalize}
             except Exception as exc:
                 entry = {'card':{**base, 'artifact_status':'broken_artifact','artifact_error':str(exc)}}
             _CACHE[key] = entry
@@ -210,8 +212,24 @@ class DoctorRegistry:
                 raise ModelBrokenError('The selected crop model is unavailable. Install/verify its pinned bundle before screening.')
             try:
                 import torch
-                with torch.inference_mode(): logits = bundle['model'](bundle['transform'](image).unsqueeze(0))[0]
+                transform = bundle['transform']
+                with torch.inference_mode():
+                    logits = bundle['model'](transform(image).unsqueeze(0))[0]
                 result = classify_logits(logits, card['labels'], crop, card['threshold'])
+                if crop in {'tomato', 'potato'} and result['rejection_reason'] == 'low_confidence':
+                    candidate = result['alternatives'][0]['label']
+                    if not candidate.lower().endswith('___healthy'):
+                        # The standard center crop can omit affected tissue near the edges.
+                        # Accept the wider view only when it supports the same condition.
+                        side = card['preprocessing']['crop']
+                        framed = ImageOps.pad(image, (side, side), method=Image.Resampling.BICUBIC,
+                                              color=tuple(round(value * 255) for value in card['preprocessing']['mean']))
+                        tensor = bundle['normalize'](framed)
+                        with torch.inference_mode():
+                            wider_logits = bundle['model'](tensor.unsqueeze(0))[0]
+                        wider = classify_logits(wider_logits, card['labels'], crop, card['threshold'])
+                        if wider['top_label'] == candidate:
+                            result = {**wider, 'image_view': 'full_frame'}
             except Exception as exc:
                 raise ModelBrokenError(f'Crop model inference failed safely: {exc}') from exc
         return dict(crop=crop, classification=result, model=card, quality_flags=flags,

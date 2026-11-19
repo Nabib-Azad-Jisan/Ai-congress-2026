@@ -168,7 +168,8 @@ def test_public_summary_follows_real_marketplace_flow(client):
     for amount in ('40','60','80'):
         listing = product(client, seller, price_bdt=amount)
         groups.append(place(listing, buyer, receiver, 'buy-'+amount))
-    status(place(listing, demo_session, address(client, demo_session), 'demo-buyer'), seller, 'confirmed')
+    demo_buyer, _ = account(client, 'customer', 'demo-customer')
+    status(place(listing, demo_buyer, address(client, demo_buyer), 'demo-buyer'), seller, 'confirmed')
     assert summary()['asking'] == {'count':3,'median_bdt':'60.00'}
     assert summary()['agreed'] == {'count':0,'median_bdt':None}
     for group in groups:

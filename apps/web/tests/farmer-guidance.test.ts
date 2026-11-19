@@ -97,6 +97,15 @@ describe('Bangla adviser summary', () => {
     expect(summary).not.toContain('বেছে নিয়েছি');
   });
 
+  it('explains a local crop mismatch even when there is no written assessment', () => {
+    const result = {...base, assessment: undefined, classification: {
+      ...base.classification, abstained: true, rejection_reason: 'crop_mismatch',
+    }};
+    const guidance = farmerGuidance(result, 'en');
+    expect(guidance.reason).toContain('matched to your selection');
+    expect(guidance.action).toContain('close photo of the leaf');
+  });
+
   it('supplies a usable legacy summary without inventing answers, leaf signs or diagnoses', () => {
     const saved = {...base, assessment: undefined};
     expect(farmerGuidance(saved, 'en').checks).toEqual([]);

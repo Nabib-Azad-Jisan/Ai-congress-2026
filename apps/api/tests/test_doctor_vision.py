@@ -16,11 +16,13 @@ def upload(client, **form):
     return client.post('/api/v1/doctor/cases', data=form, files={'image': ('test.png', out.getvalue(), 'image/png')})
 
 
-def provider(monkeypatch, answer, status=200):
+def provider(monkeypatch, answer, status=200, *, expected_instruction=None):
     monkeypatch.setenv('GROQ_API_KEY', 'unit-test-only')
     def post(url, *, headers, json, timeout):
         assert url == 'https://api.groq.com/openai/v1/chat/completions'
         assert 0 < json['max_completion_tokens'] <= 1000
+        if expected_instruction is not None:
+            assert expected_instruction in json['messages'][0]['content']
         content = json['messages'][-1]['content']
         data_url = next(item['image_url']['url'] for item in content if item['type'] == 'image_url')
         image = Image.open(io.BytesIO(base64.b64decode(data_url.split(',')[1])))
@@ -82,6 +84,16 @@ def test_generic_signs_only_support_a_symptom_pattern(client, session, monkeypat
                                   distinguishing_sign='A yellow halo.', marker='nonspecific'))
     result = upload(client, plot_id=session['plot_id']).json()
     assert result['classification']['top_label'] == 'Leaf spotting'
+    assert result['assessment']['condition'] is None
+
+
+def test_potato_leaf_screen_considers_leafroll_and_rejects_generic_curling(client, session, monkeypatch):
+    provider(monkeypatch, finding(subject='Potato leaf', part='leaf', produce_finding=None,
+                                  condition='Potato leafroll virus', pattern='Upward curling',
+                                  distinguishing_sign='One leaflet rolls upward.', marker='nonspecific'),
+             expected_instruction='A lone discolored or curled')
+    result = upload(client, crop='potato', plant_part='leaf').json()
+    assert result['classification']['top_label'] == 'Upward curling'
     assert result['assessment']['condition'] is None
 
 

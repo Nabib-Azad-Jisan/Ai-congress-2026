@@ -64,7 +64,10 @@ function assessmentGuidance(result: DoctorScreening) {
   const general = {source: scoutingSource, uncertain: true, useAnswers: false};
   if (!a) {
     const action = result.classification.abstained ? words.retry : words.leaf;
-    return {...general, action, reason: words.legacy, useAnswers: c?.kind === 'leaf'};
+    const rejection = result.classification.rejection_reason;
+    const reason = rejection === 'crop_mismatch' ? words.wrongCrop
+      : rejection === 'low_confidence' || rejection === 'image_quality' ? words.unclear : words.legacy;
+    return {...general, action: rejection === 'crop_mismatch' ? words.showLeaf : action, reason, useAnswers: c?.kind === 'leaf'};
   }
   if (a.crop_match === 'mismatch' || (result.crop !== 'auto' && a.crop_match === 'unknown')) {
     return {...general, action: words.retry, reason: words.wrongCrop};

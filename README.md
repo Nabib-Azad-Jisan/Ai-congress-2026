@@ -39,7 +39,7 @@ Weights are downloaded from pinned SafeTensor revisions, verified and exported l
 
 ## Run locally (Windows, without Docker)
 
-For free email-code verification, follow [Gmail setup](docs/email-setup.md). Optional SMS uses [Twilio setup](docs/sms-setup.md). The API, migrations and worker load private settings from the root `.env`; service environment variables take precedence.
+Sign up and sign in with a phone number or email and a password. Store a stable Fernet encryption key as `SIGNUP_DATA_KEY` in the private root `.env` for signup details and photos. Generate it once with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` after installing the API dependencies. The API, migrations and worker load private settings from the root `.env`; service environment variables take precedence.
 
 From this directory, create a Python environment and install dependencies:
 

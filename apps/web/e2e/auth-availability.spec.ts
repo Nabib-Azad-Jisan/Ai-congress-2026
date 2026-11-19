@@ -1,53 +1,34 @@
 import {test, expect} from '@playwright/test';
 
-test('unavailable verification explains the disabled action beside the button', async ({page}) => {
-  await page.route('**/auth/options', route => route.fulfill({json: {otp: false, signup: false, demo: true}}));
+test('customer signs up and returns with an email and password', async ({page}) => {
+  const email = `customer-${crypto.randomUUID()}@example.test`;
+  const password = 'Test-customer-9842';
+  const otpRequests: string[] = [];
+  page.on('request', req => { if (req.url().includes('/auth/otp/')) otpRequests.push(req.url()); });
+  await page.goto('/en/marketplace/auth');
+  await page.getByRole('button', {name: 'Sign up', exact: true}).click();
+  await page.getByLabel('Full name').fill('Test Customer');
+  await page.getByLabel('Age in years').fill('29');
+  await page.getByLabel('Account type').selectOption('customer');
+  await page.getByLabel('Bangladesh national ID number').fill('0123456789012');
+  await page.getByLabel('Gender').selectOption('female');
+  await page.getByLabel('Permanent address').fill('Sample permanent address');
+  await page.getByLabel('Present address').fill('Sample present address');
+  await page.getByLabel('Ward number').fill('5');
+  await page.getByLabel('Passport-size photo').setInputFiles('public/crops/tomato.jpg');
+  await page.getByLabel('Set password').fill(password);
+  await page.getByLabel('Confirm password').fill(password);
+  await page.getByLabel('Account contact').selectOption('email');
+  await page.getByLabel('Email address').fill(email);
+  await page.getByRole('button', {name: 'Create account'}).click();
+  await expect(page.getByRole('link', {name: 'Buy produce', exact: true})).toBeVisible();
+  await page.evaluate(() => localStorage.removeItem('agrosphere-token'));
   await page.goto('/en');
-  const button = page.getByRole('button', {name: 'Verification unavailable', exact: true});
-  await expect(button).toBeDisabled();
-  const reason = page.locator('#verification-availability');
-  await expect(reason).toContainText('SMS verification is currently unavailable');
-  await expect(button).toHaveAttribute('aria-describedby', 'verification-availability');
-  await page.getByLabel('Receive code by').selectOption('email');
-  await expect(reason).toContainText('Email verification is currently unavailable');
-  await expect(page.getByRole('button', {name: 'Explore a demo farm'})).toBeEnabled();
-});
-
-test('a valid phone number can request a code when verification is configured', async ({page}) => {
-  await page.route('**/auth/options', route => route.fulfill({json: {otp: true, signup: true, demo: true}}));
-  await page.route('**/auth/otp/start', async route => {
-    expect(route.request().postDataJSON()).toEqual({contact: '+8801712345678', purpose: 'login'});
-    await route.fulfill({json: {verification_id: 'VE' + 'a'.repeat(32)}});
-  });
-  await page.goto('/en');
-  await page.getByRole('textbox', {name: /Mobile number/}).fill('1712345678');
-  await page.getByRole('button', {name: 'Send verification code'}).click();
-  await expect(page.getByLabel('Verification code', {exact: true})).toBeVisible();
-});
-
-test('email-only setup selects email and does not offer SMS delivery', async ({page}) => {
-  await page.route('**/auth/options', route => route.fulfill({json: {
-    otp: true, signup: true, demo: true, channels: {email: true, sms: false}, default_channel: 'email',
-  }}));
-  await page.route('**/auth/otp/start', async route => {
-    expect(route.request().postDataJSON()).toEqual({contact: 'farmer@example.test', purpose: 'login'});
-    await route.fulfill({json: {verification_id: 'EM' + 'b'.repeat(32)}});
-  });
-  await page.goto('/en');
-  await expect(page.getByLabel('Receive code by')).toHaveValue('email');
-  await expect(page.locator('option[value="phone"]')).toBeDisabled();
-  await page.getByLabel('Email address').fill('farmer@example.test');
-  await page.getByRole('button', {name: 'Send verification code'}).click();
-  await expect(page.getByLabel('Verification code', {exact: true})).toBeVisible();
-  await expect(page.getByText('If your account is eligible, a code has been sent. Enter it below.')).toBeVisible();
-});
-
-test('unconfigured Gmail shows an email-specific status in Bengali', async ({page}) => {
-  await page.route('**/auth/options', route => route.fulfill({json: {
-    otp: false, signup: false, demo: true, channels: {email: false, sms: false}, default_channel: 'email',
-  }}));
-  await page.goto('/bn');
-  await expect(page.getByLabel('কোড পাওয়ার মাধ্যম')).toHaveValue('email');
-  await expect(page.getByRole('button', {name: 'যাচাই চালু নেই'})).toBeDisabled();
-  await expect(page.locator('#verification-availability')).toContainText('ইমেইল');
+  await page.getByLabel('Account contact').selectOption('email');
+  await page.getByLabel('Email address').fill(email);
+  await page.getByLabel('Password', {exact: true}).fill(password);
+  await page.locator('form').getByRole('button', {name: 'Sign in', exact: true}).click();
+  await expect(page.getByRole('link', {name: 'Buy produce', exact: true})).toBeVisible();
+  await expect(page.getByRole('link', {name: 'Sell produce', exact: true})).toHaveCount(0);
+  expect(otpRequests).toEqual([]);
 });

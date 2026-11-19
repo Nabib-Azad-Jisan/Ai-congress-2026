@@ -25,6 +25,7 @@ from .market_auth import AuthLimiter, _DUMMY_HASH, hash_password, issue_session,
 router = APIRouter(prefix='/api/v1/auth', tags=['authentication'])
 send_limit = AuthLimiter(window=600, ip_limit=12, identity_limit=3, by_destination=True)
 check_limit = AuthLimiter(window=600, ip_limit=40, identity_limit=10, by_destination=True)
+BANGLA_DIGITS = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
 
 
 def demo_login_enabled() -> bool:
@@ -40,13 +41,9 @@ class Contact(BaseModel):
     def normalize(cls, value: str) -> str:
         if '@' in value:
             return normalize_email(value)
-        phone = re.sub(r'[\s()-]', '', value).translate(str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789'))
-        if re.fullmatch(r'01[0-9]{9}', phone):
-            phone = '+88' + phone
-        elif re.fullmatch(r'8801[0-9]{9}', phone):
-            phone = '+' + phone
+        phone = value.translate(BANGLA_DIGITS)
         if not re.fullmatch(r'\+8801[0-9]{9}', phone):
-            raise ValueError('Enter a Bangladesh mobile number with 11 local digits or +8801 followed by exactly 9 digits')
+            raise ValueError('Enter a Bangladesh mobile number with exactly 14 characters, including +, such as +8801712345678')
         return phone
 
 
@@ -77,9 +74,9 @@ class ProfileInput(BaseModel):
     @field_validator('national_id')
     @classmethod
     def format_nid(cls, value: SecretStr) -> SecretStr:
-        digits = value.get_secret_value().translate(str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')).strip()
+        digits = value.get_secret_value().translate(BANGLA_DIGITS)
         if not re.fullmatch(r'(?:[0-9]{10}|[0-9]{13}|[0-9]{17})', digits):
-            raise ValueError('Enter a 10, 13, or 17 digit national ID number')
+            raise ValueError('Enter exactly 10, 13, or 17 digits for the national ID')
         return SecretStr(digits)
 
     @model_validator(mode='after')
@@ -87,6 +84,10 @@ class ProfileInput(BaseModel):
         if self.password != self.confirm_password:
             raise ValueError('Passwords must match')
         return self
+
+
+class PasswordSignup(Contact):
+    profile: ProfileInput
 
 
 class ContactPassword(Contact):
@@ -173,8 +174,12 @@ def lookup(db: Session, contact: str) -> User | None:
 
 
 def otp_account(db: Session, account: User | None) -> bool:
-    return bool(account and account.is_active and account.role != 'admin'
-                and (not account.password_hash or db.get(SignupIdentity, account.id)))
+    if not account or not account.is_active or account.role == 'admin':
+        return False
+    if not account.password_hash:
+        return True
+    identity = db.get(SignupIdentity, account.id)
+    return bool(identity and identity.contact_verified)
 
 
 def email_provider() -> str:
@@ -187,6 +192,42 @@ def available_channels() -> dict[str, bool]:
         'email': smtp_ready() if email_provider() == 'smtp' else twilio,
         'sms': twilio and os.getenv('ENABLE_SMS_VERIFICATION', '1') == '1',
     }
+
+
+def register_profile(db: Session, contact: str, profile: ProfileInput, cipher: Fernet, photo: bytes,
+                     *, contact_verified: bool) -> dict:
+    try:
+        account = User(name=profile.name, age=profile.age, role=profile.role, is_demo=fixture_contact(contact),
+                       email=contact if '@' in contact else None,
+                       phone=contact if '@' not in contact else None,
+                       password_hash=hash_password(profile.password.get_secret_value()))
+        db.add(account)
+        db.flush()
+        details = {
+            'national_id': profile.national_id.get_secret_value(),
+            'permanent_address': profile.permanent_address,
+            'present_address': profile.present_address,
+            'ward_number': profile.ward_number,
+        }
+        db.add(SignupIdentity(user_id=account.id, gender=profile.gender, contact_verified=contact_verified,
+                              encrypted_details=cipher.encrypt(json.dumps(details).encode('utf-8')),
+                              encrypted_photo=cipher.encrypt(photo)))
+        session = issue_session(db, account)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, 'An account already uses this contact') from None
+    return session
+
+
+@router.post('/signup')
+def password_signup(body: PasswordSignup, request: Request, response: Response, db: Session = Depends(get_db)):
+    response.headers['Cache-Control'] = 'no-store'
+    limit_auth(request, body.contact)
+    if lookup(db, body.contact):
+        raise HTTPException(409, 'An account already uses this contact')
+    return register_profile(db, body.contact, body.profile, identity_cipher(),
+                            passport_photo(body.profile.photo_base64), contact_verified=False)
 
 
 @router.post('/password')
@@ -208,7 +249,7 @@ def auth_options():
     otp = any(channels.values())
     try:
         identity_cipher()
-        signup = otp
+        signup = True
     except HTTPException:
         signup = False
     return {'demo': demo_login_enabled(), 'otp': otp, 'signup': signup, 'channels': channels,
@@ -269,27 +310,9 @@ def verify(body: Verify, request: Request, response: Response, db: Session = Dep
         result = verify_request('VerificationCheck', {'VerificationSid': body.verification_id, 'Code': body.code})
         if result.get('status') != 'approved' or result.get('to') != body.contact:
             raise invalid
-    try:
-        if profile is not None:
-            account = User(name=profile.name, age=profile.age, role=profile.role, is_demo=fixture_contact(body.contact),
-                           email=body.contact if '@' in body.contact else None,
-                           phone=body.contact if '@' not in body.contact else None,
-                           password_hash=hash_password(profile.password.get_secret_value()))
-            db.add(account)
-            db.flush()
-            details = {
-                'national_id': profile.national_id.get_secret_value(),
-                'permanent_address': profile.permanent_address,
-                'present_address': profile.present_address,
-                'ward_number': profile.ward_number,
-            }
-            db.add(SignupIdentity(user_id=account.id, gender=profile.gender,
-                                  encrypted_details=cipher.encrypt(json.dumps(details).encode('utf-8')),
-                                  encrypted_photo=cipher.encrypt(photo)))
-        assert account is not None
-        session = issue_session(db, account)
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(409, 'An account already uses this contact') from None
+    if profile is not None:
+        return register_profile(db, body.contact, profile, cipher, photo, contact_verified=True)
+    assert account is not None
+    session = issue_session(db, account)
+    db.commit()
     return session

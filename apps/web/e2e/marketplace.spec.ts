@@ -9,46 +9,37 @@ async function account(request: APIRequestContext, role: 'farmer'|'customer') {
   expect(response.ok(), await response.text()).toBeTruthy();
   return response.json() as Promise<{token:string;user:{id:string}}>;
 }
-async function signIn(page: Page, token:string) {
+async function signIn(page: Page, token:string, role:'farmer'|'customer') {
   await page.goto('/en/marketplace');
   await page.evaluate(token=>localStorage.setItem('agrosphere-token',token),token);
   await page.reload();
-  await expect(page.getByRole('link',{name:'Buy produce',exact:true})).toBeVisible();
+  await expect(page.getByRole('link',{name:role==='farmer'?'Sell produce':'Buy produce',exact:true})).toBeVisible();
 }
-test('OTP registration opens the farmer workspace and customer selling stays restricted',async({page,request})=>{
-  const farmer=await account(request,'farmer');
+test('Password registration opens the farmer workspace and marketplace actions match each role',async({page,request})=>{
   const customer=await account(request,'customer');
-  const sid='VE'+ 'f'.repeat(32);
+  const contact = '+8801' + String(Math.floor(Math.random() * 1e9)).padStart(9, '0');
   const photo='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
   const details={
     national_id:'1234567890',gender:'male',permanent_address:'Test permanent address',
     present_address:'Test present address',ward_number:'12',photo_base64:photo,
     password:'correct horse battery',confirm_password:'correct horse battery',
   };
-  await page.route('**/auth/options', route=>route.fulfill({json:{otp:true,demo:false,signup:true}}));
-  await page.route('**/auth/otp/start',async route=>{
-    expect(route.request().postDataJSON()).toEqual({contact:'+8801712345678',purpose:'signup'});
-    await route.fulfill({json:{verification_id:sid}});
-  });
-  await page.route('**/auth/otp/verify',async route=>{
-    expect(route.request().postDataJSON()).toEqual({
-      contact:'+8801712345678',purpose:'signup',verification_id:sid,code:'123456',
-      profile:{name:'Market farmer',age:28,role:'farmer',...details},
-    });
-    await route.fulfill({json:{token:farmer.token,user:{role:'farmer'}}});
-  });
-  await page.route('**/api/v1/me',async route=>{
-    const response=await route.fetch();
-    const user=await response.json();
-    await route.fulfill({response,json:user.name==='Market farmer'?{...user,gender:'male'}:user});
-  });
   await page.goto('/en');
   await expect(page.getByRole('heading',{name:'Sign in to AgroSphere'})).toBeVisible();
   await page.getByRole('button',{name:'Sign up',exact:true}).click();
   await page.getByLabel('Full name').fill('Market farmer');
   await page.getByLabel('Age in years').fill('28');
   await page.getByLabel('Account type').selectOption('farmer');
-  await page.getByLabel('Bangladesh national ID number').fill(details.national_id);
+  const nid = page.getByLabel('Bangladesh national ID number');
+  for (const invalid of ['123456789','12345678901','123456789012345678','123456789A','12345 67890']) {
+    await nid.fill(invalid);
+    expect(await nid.evaluate((input: HTMLInputElement)=>input.validity.patternMismatch)).toBe(true);
+  }
+  for (const valid of ['0123456789','0123456789012','০১২৩৪৫৬৭৮৯০১২৩৪৫৬']) {
+    await nid.fill(valid);
+    expect(await nid.evaluate((input: HTMLInputElement)=>input.validity.valid)).toBe(true);
+  }
+  await nid.fill(details.national_id);
   await page.getByLabel('Gender').selectOption('male');
   await page.getByLabel('Permanent address').fill(details.permanent_address);
   await page.getByLabel('Present address').fill(details.present_address);
@@ -57,21 +48,30 @@ test('OTP registration opens the farmer workspace and customer selling stays res
   await page.getByLabel('Set password').fill(details.password);
   await page.getByLabel('Confirm password').fill(details.confirm_password);
   const mobile = page.getByRole('textbox',{name:/Mobile number/});
-  for (const invalid of ['171234567','17123456789','0712345678']) {
+  for (const invalid of ['+880171234567','+88017123456789','01712345678','8801712345678','+880171234567A']) {
     await mobile.fill(invalid);
     expect(await mobile.evaluate((input: HTMLInputElement)=>input.validity.patternMismatch)).toBe(true);
   }
-  await mobile.fill('1712345678');
+  await mobile.fill(contact);
   expect(await mobile.evaluate((input: HTMLInputElement)=>input.validity.valid)).toBe(true);
-  await page.getByRole('button',{name:'Send verification code'}).click();
-  await page.getByLabel('Verification code').fill('123456');
-  await page.getByRole('button',{name:'Verify and continue'}).click();
+  await page.getByRole('button',{name:'Create account',exact:true}).click();
   await expect(page.locator('#sidebar').getByRole('link',{name:/AgroDoctor/})).toBeVisible();
   await expect(page.getByText('Hello, Mr. Market farmer',{exact:true})).toBeVisible();
-  await signIn(page,farmer.token);
+  await page.locator('#sidebar').getByRole('link',{name:'Marketplace',exact:true}).click();
   await expect(page.getByRole('link',{name:'Sell produce',exact:true})).toBeVisible();
-  await signIn(page,customer.token);
+  const nav=page.getByRole('navigation',{name:'Marketplace navigation'});
+  for(const name of ['Buy','Cart','Favorites','Auctions']){
+    await expect(nav.getByRole('link',{name,exact:true})).toHaveCount(0);
+  }
+  await expect(page.getByRole('link',{name:'Buy produce',exact:true})).toHaveCount(0);
+  for(const path of ['browse','cart','favorites','auctions','products/example']){
+    await page.goto('/en/marketplace/'+path);
+    await expect(page.getByRole('heading',{name:'Buying is for customer accounts'})).toBeVisible();
+  }
+  await signIn(page,customer.token,'customer');
   await expect(page.getByRole('link',{name:'Sell produce',exact:true})).toHaveCount(0);
+  await expect(nav.getByRole('link',{name:'Sell',exact:true})).toHaveCount(0);
+  await expect(nav.getByRole('link',{name:'Cart',exact:true})).toBeVisible();
   await page.goto('/en/marketplace/seller');
   await expect(page.getByRole('heading',{name:'Selling is for farmer accounts'})).toBeVisible();
   await page.goto('/en/agrodoctor');
@@ -100,7 +100,7 @@ test('farmer listing, customer direct purchase with MOQ, and fulfillment',async(
   const profile=await request.patch(API+'/market/profile',{headers,data:{public_name:'Test harvest farm',district:'Dhaka',area:'Savar',latitude:23.85,longitude:90.25,bio:'Fresh test produce',phone:'01700000001'}});
   expect(profile.ok(),await profile.text()).toBeTruthy();
   const farmResponse=await request.post(API+'/farms',{headers,data:{name:'E2E harvest farm',district:'Dhaka'}});expect(farmResponse.ok(),await farmResponse.text()).toBeTruthy();const farm=await farmResponse.json();
-  await signIn(page,farmer.token);
+  await signIn(page,farmer.token,'farmer');
   await page.getByRole('link',{name:'Sell produce',exact:true}).click();
   await page.getByRole('button',{name:'New listing',exact:true}).click();
   const name=`Fresh tomato ${crypto.randomUUID().slice(0,8)}`;
@@ -121,7 +121,7 @@ test('farmer listing, customer direct purchase with MOQ, and fulfillment',async(
   await page.getByRole('button',{name:'Upload photo',exact:true}).click();
   await expect(page.getByText('Photo added.',{exact:true})).toBeVisible();
   const buyerContext=await browser.newContext({baseURL:WEB}); const buyer=await buyerContext.newPage();
-  await signIn(buyer,customer.token);
+  await signIn(buyer,customer.token,'customer');
   await buyer.getByRole('link',{name:'Buy produce',exact:true}).click();
   await buyer.getByLabel('Search produce').fill(name);
   await buyer.getByLabel('District (manual)').fill('Dhaka');
@@ -143,11 +143,19 @@ test('farmer listing, customer direct purchase with MOQ, and fulfillment',async(
   await buyer.getByLabel('Phone',{exact:true}).fill('01700000002');
   await buyer.getByLabel('Address line').fill('Test pickup address');
   await buyer.getByLabel('District',{exact:true}).fill('Dhaka');
-  await buyer.getByLabel('Area',{exact:true}).fill('Savar');
+  await buyer.getByLabel('Area',{exact:true}).fill('Dhanmondi');
   await buyer.getByRole('button',{name:'Save address',exact:true}).click();
   await buyer.getByRole('radio').first().check();
   await buyer.getByRole('button',{name:'Place demo order',exact:true}).click();
   await expect(buyer.getByText('demo_unpaid',{exact:true}).first()).toBeVisible();
+  await page.reload();
+  const recent=page.getByRole('region',{name:'Recent orders'}).locator('[data-seller-order]').filter({hasText:name});
+  await expect(recent).toContainText('2.000 kg');
+  await expect(recent).toContainText('Market customer');
+  await expect(recent).toContainText('Test Buyer');
+  await expect(recent).toContainText('Dhanmondi, Dhaka');
+  await expect(recent).not.toContainText('Test pickup address');
+  await expect(page.getByRole('link',{name:'Farmer call centre · 16123'})).toHaveAttribute('href','tel:16123');
   await page.getByRole('link',{name:'Orders',exact:true}).click();
   for(const status of ['confirmed','preparing','ready_for_pickup','delivered']) {
     const order=page.locator('[data-seller-order]').filter({hasText:name}).first();
@@ -167,7 +175,7 @@ test('optional auction retains direct buy and creates an unpaid winner order',as
   const farmResponse=await request.post(API+'/farms',{headers,data:{name:'Auction grower',district:'Dhaka'}});expect(farmResponse.ok(),await farmResponse.text()).toBeTruthy();const farm=await farmResponse.json();
   const productResponse=await request.post(API+'/market/products',{headers,data:{farm_id:farm.id,name:'Auction harvest '+crypto.randomUUID().slice(0,8),category:'vegetables',description:'Optional separate auction lot',price_bdt:'50',unit:'kg',quantity_step:'1',stock_quantity:'30',status:'published',pickup_enabled:true}});expect(productResponse.ok(),await productResponse.text()).toBeTruthy();const product=await productResponse.json();
   const addressResponse=await request.post(API+'/market/addresses',{headers:buyerHeaders,data:{name:'Auction buyer',phone:'01700000003',line1:'Pickup address',district:'Dhaka',area:'Savar'}});expect(addressResponse.ok(),await addressResponse.text()).toBeTruthy();
-  await signIn(page,customer.token);await page.goto('/en/marketplace/products/'+product.id);
+  await signIn(page,customer.token,'customer');await page.goto('/en/marketplace/products/'+product.id);
   await expect(page.getByRole('button',{name:'Buy now',exact:true})).toBeVisible();
   const now=Date.now();const auctionResponse=await request.post(API+'/market/auctions',{headers,data:{product_id:product.id,lot_quantity:'5',starting_bid_bdt:'200',minimum_increment_bdt:'10',starts_at:new Date(now-1000).toISOString(),ends_at:new Date(now+12000).toISOString(),draft:false}});expect(auctionResponse.ok(),await auctionResponse.text()).toBeTruthy();const auction=await auctionResponse.json();
   await page.reload();await expect(page.getByRole('heading',{name:'Optional auction lot',exact:true})).toBeVisible();

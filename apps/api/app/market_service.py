@@ -81,7 +81,7 @@ def distance_km(lat1,lon1,lat2,lon2):
 def listing_eligible(db,p):
     seller=db.get(User,p.farmer_id)
     verified=not policy(db)['require_verified_farmer'] or bool(db.get(Profile,p.farmer_id) and db.get(Profile,p.farmer_id).verification_status=='verified')
-    return bool(verified and p.status=='published' and p.moderation_status=='visible' and seller and seller.is_active and (not p.available_from or p.available_from<=clock().date().isoformat()))
+    return bool(verified and p.status=='published' and p.moderation_status=='visible' and seller and seller.is_active and seller.role=='farmer' and (not p.available_from or p.available_from<=clock().date().isoformat()))
 def can_view(db,p,user=None):
     return listing_eligible(db,p) or bool(user and (user.id==p.farmer_id or user.role=='admin'))
 def check_quantity(p,quantity,*,stock=True,moq=True):
@@ -132,11 +132,21 @@ def product_view(db,p,user=None,lat=None,lon=None,include_auction=True,ratings=N
         data['auction']=auction_view(db,a,user,include_product=False) if a and (a.state!='draft' or user and user.id==p.farmer_id) else None
     return data
 
+def eligible_customer(user):
+    return bool(user and user.is_active and user.role == 'customer')
+
+
+def highest_customer_bid(db, auction_id):
+    return db.scalar(select(Bid).join(User, User.id == Bid.customer_id)
+                     .where(Bid.auction_id == auction_id, User.is_active.is_(True), User.role == 'customer')
+                     .order_by(Bid.amount_bdt.desc(), Bid.created_at).limit(1))
+
+
 def auction_view(db,a,user=None,include_product=True):
     p=db.get(Product,a.product_id);bids=list(db.scalars(select(Bid).where(Bid.auction_id==a.id).order_by(Bid.amount_bdt.desc(),Bid.created_at)))
     order=db.scalar(select(Order).where(Order.auction_id==a.id))
     data={k:getattr(a,k) for k in ['id','product_id','farmer_id','starts_at','ends_at','confirmation_deadline','state','created_at']}
-    data.update(lot_quantity=q(a.lot_quantity),unit=p.unit,starting_bid_bdt=m(a.starting_bid_bdt),minimum_increment_bdt=m(a.minimum_increment_bdt),highest_bid_bdt=m(a.highest_bid_bdt) if a.highest_bid_bdt is not None else None,winner_is_you=bool(user and a.winner_id==user.id),confirmed_order_id=order.id if order and user and (user.id in [a.winner_id,a.farmer_id] or user.role=='admin') else None,reserve_met=a.highest_bid_bdt>=a.reserve_price_bdt if a.reserve_price_bdt and a.highest_bid_bdt is not None else a.reserve_price_bdt is None,server_time=stamp(clock()),notice=NOTICE,bids=[{'id':b.id,'amount_bdt':m(b.amount_bdt),'created_at':b.created_at,'bidder_alias':'Bidder '+hashlib.sha256((a.id+b.customer_id).encode()).hexdigest()[:6],'is_yours':bool(user and b.customer_id==user.id),'eligible':bool(db.get(User,b.customer_id).is_active)} for b in bids[:100]])
+    data.update(lot_quantity=q(a.lot_quantity),unit=p.unit,starting_bid_bdt=m(a.starting_bid_bdt),minimum_increment_bdt=m(a.minimum_increment_bdt),highest_bid_bdt=m(a.highest_bid_bdt) if a.highest_bid_bdt is not None else None,winner_is_you=bool(user and a.winner_id==user.id),confirmed_order_id=order.id if order and user and (user.id in [a.winner_id,a.farmer_id] or user.role=='admin') else None,reserve_met=a.highest_bid_bdt>=a.reserve_price_bdt if a.reserve_price_bdt and a.highest_bid_bdt is not None else a.reserve_price_bdt is None,server_time=stamp(clock()),notice=NOTICE,bids=[{'id':b.id,'amount_bdt':m(b.amount_bdt),'created_at':b.created_at,'bidder_alias':'Bidder '+hashlib.sha256((a.id+b.customer_id).encode()).hexdigest()[:6],'is_yours':bool(user and b.customer_id==user.id),'eligible':eligible_customer(db.get(User,b.customer_id))} for b in bids[:100]])
     if include_product:data['product']=product_view(db,p,user,include_auction=False)
     if user and (user.id==a.farmer_id or user.role=='admin'):data['reserve_price_bdt']=m(a.reserve_price_bdt) if a.reserve_price_bdt is not None else None
     return data
@@ -162,15 +172,15 @@ def tick(db):
             for bidder in set(db.scalars(select(Bid.customer_id).where(Bid.auction_id==a.id))):notify(db,bidder,'Auction listing unavailable','auction',a.id)
             continue
         if a.state in ['scheduled','live']:
-            best_live=db.scalar(select(Bid).join(User,User.id==Bid.customer_id).where(Bid.auction_id==a.id,User.is_active.is_(True)).order_by(Bid.amount_bdt.desc(),Bid.created_at))
+            best_live=highest_customer_bid(db,a.id)
             a.highest_bid_bdt=best_live.amount_bdt if best_live else None
-        if a.state=='awarded' and a.reserved and a.winner_id and not db.get(User,a.winner_id).is_active:
+        if a.state=='awarded' and a.reserved and a.winner_id and not eligible_customer(db.get(User,a.winner_id)):
             a.state='unfulfilled';release_auction(db,a);audit(db,None,'auction.winner_ineligible','auction',a.id)
             continue
         if a.state=='scheduled' and a.starts_at<=current<a.ends_at:a.state='live'
         if a.state in ['scheduled','live'] and a.ends_at<=current:
             p=db.get(Product,a.product_id)
-            best=db.scalar(select(Bid).join(User,User.id==Bid.customer_id).where(Bid.auction_id==a.id,User.is_active.is_(True)).order_by(Bid.amount_bdt.desc(),Bid.created_at))
+            best=highest_customer_bid(db,a.id)
             if not listing_eligible(db,p):a.state='cancelled';release_auction(db,a)
             elif best and (a.reserve_price_bdt is None or best.amount_bdt>=a.reserve_price_bdt):
                 a.state='awarded';a.winner_id=best.customer_id;a.highest_bid_bdt=best.amount_bdt;a.confirmation_deadline=stamp(datetime.fromisoformat(a.ends_at)+timedelta(hours=settings['winner_confirmation_hours']))
@@ -233,6 +243,9 @@ def create_order(db,user,address,lines,fulfillment,auction=None):
     for (farmer,farm,method),items in groups.items():
         subtotal=sum((line for _,_,line in items),Decimal(0));fee=max((p.delivery_fee_bdt for p,_,_ in items),default=Decimal(0)) if method=='delivery' else Decimal(0)
         destination=address_view(address) if method=='delivery' else {'district':items[0][0].district,'area':items[0][0].area,'pickup_instructions':items[0][0].pickup_instructions,'contact_name':address.name,'phone':address.phone,'notice':'Contact the farmer to agree pickup; exact farm coordinates are not public.'}
+        destination['ordered_by'] = user.name
+        if method == 'pickup':
+            destination.update(customer_area=address.area, customer_district=address.district)
         so=SellerOrder(order_id=order.id,farmer_id=farmer,farm_id=farm,fulfillment=method,subtotal_bdt=subtotal,delivery_fee_bdt=fee,total_bdt=subtotal+fee,destination=destination,expires_at=stamp(clock()+timedelta(hours=policy(db)['order_acceptance_hours'])))
         db.add(so);db.flush();order.total_bdt+=so.total_bdt
         for p,quantity,line in items:

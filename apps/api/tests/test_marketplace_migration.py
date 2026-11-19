@@ -24,7 +24,7 @@ def test_unversioned_existing_workspace_upgrade_is_additive(tmp_path):
     with engine.connect() as db:
         assert db.scalar(text("SELECT name FROM users WHERE id='preserved'"))=='Existing farmer'
         assert db.scalar(text("SELECT id FROM records WHERE id='original'"))=='original'
-        assert db.scalar(text('SELECT version_num FROM alembic_version'))=='0008'
+        assert db.scalar(text('SELECT version_num FROM alembic_version'))=='0009'
         assert db.scalar(text('SELECT COUNT(*) FROM email_verifications'))==0
 
 

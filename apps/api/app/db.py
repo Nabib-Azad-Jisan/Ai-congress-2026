@@ -50,6 +50,7 @@ class SignupIdentity(Base):
 
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
     gender: Mapped[str] = mapped_column(String(6))
+    contact_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     encrypted_details: Mapped[bytes] = mapped_column(LargeBinary)
     encrypted_photo: Mapped[bytes] = mapped_column(LargeBinary)
 
@@ -114,6 +115,13 @@ def ensure_otp_schema(connection) -> None:
         ))
 
 
+def ensure_signup_contact_schema(connection) -> None:
+    columns = inspect(connection).get_columns('signup_identities')
+    if 'contact_verified' not in {column['name'] for column in columns}:
+        # All identity profiles predating password signup required a successful OTP.
+        connection.execute(text('ALTER TABLE signup_identities ADD COLUMN contact_verified BOOLEAN NOT NULL DEFAULT true'))
+
+
 def ensure_compat_schema(target_engine) -> None:
     """Create tables and add legacy lifecycle/identity columns without resetting data."""
     Base.metadata.create_all(target_engine)
@@ -137,6 +145,7 @@ def ensure_compat_schema(target_engine) -> None:
                 conn.execute(text('CREATE UNIQUE INDEX uq_users_email ON users (email)'))
         with target_engine.begin() as conn:
             ensure_otp_schema(conn)
+            ensure_signup_contact_schema(conn)
             from .district_evidence_schema import ensure_district_evidence_schema
             ensure_district_evidence_schema(conn)
     if 'records' in table_names:

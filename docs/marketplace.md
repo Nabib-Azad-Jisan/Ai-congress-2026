@@ -10,9 +10,11 @@ Product pages show the seller's transportation fee before checkout. Free pickup 
 
 In Sell, choose New listing and attach an optional photo and video before saving. The seller can add up to six photos after saving, and can replace the listing video by removing the current one. Photos accept JPG, PNG or WebP up to 8 MB. A listing can have one MP4 or WebM up to 20 MB. Buyers can load the clip on the product page once the listing is public. Draft media uses the same ownership checks as photos.
 
-## Sign in and choose Buy or Sell
+## Marketplace roles
 
-Customers and farmers use the shared phone or email OTP screen. Farmer accounts can choose Buy or Sell and use AgroDoctor. Customer accounts can buy through the Marketplace and manage orders, reviews, and profile information. Existing customer accounts with sales listings are carried forward as farmers. Admin accounts are provisioned by an operator and use the password option, which also remains available to existing password accounts. **Sign out** opens a confirmation page.
+Customers and farmers use the shared phone or email and password form. Farmer accounts use Seller studio to manage listings, auction lots, and fulfillment. Customer accounts browse, save favorites and delivery addresses, place orders and bids, and review completed purchases. The same role rules apply after signup and sign-in. Existing customer accounts with sales listings are carried forward as farmers. Admin accounts are provisioned by an operator and sign in with their existing password. **Sign out** opens a confirmation page.
+
+The API requires the customer role for new purchases and bids. Previously placed orders remain visible to their participants, and eligible pending orders can still be cancelled by the original buyer. Prior farmer bids remain in bid history, but only active customer bids are eligible to win an open auction. If an unconfirmed award belongs to an ineligible bidder, the lifecycle worker releases the reserved lot back to seller stock.
 
 
 Implemented 17 November 2026 as an extension of the existing Next.js/FastAPI/SQLAlchemy application. The request source is retained in docs/superpowers/specs/2026-11-17-krishimarket-marketplace-requirements.md. Existing AgroDoctor/FloodCrop/market-intelligence code and records remain part of the same application.

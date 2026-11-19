@@ -74,6 +74,16 @@ smell, field or storage history from a photo. Abstain for unrelated or uninterpr
 Do not certify food safety, prescribe chemicals, give doses, or invent confidence percentages.
 Keep every answer concise. Use plain language. Keep enum values and field names in English."""
 
+POTATO_FOLIAGE = """For a matching potato leaf or whole potato plant, consider these additional patterns:
+- Multiple upward-rolled leaflets with an upright growth habit can fit a leafroll pattern. Curling alone
+  also occurs with stress and stem disease. Ask for a whole-plant and stem-base view if those are missing.
+- Irregular light and dark green mosaic with puckering can fit virus-like mosaic. Report the pattern.
+  Do not identify Potato virus X, Potato virus Y, or a mixed infection by appearance.
+- An inky-black lesion visibly starting at the soil-line stem base, with wilting foliage, can suggest
+  blackleg. Without a clear stem-base view, ask for one and describe the leaves without naming blackleg.
+Use distinct_damage_distribution only when that supporting pattern is visible. A lone discolored or curled
+leaf is nonspecific. Recommend agricultural extension confirmation for suspected viral or stem disease."""
+
 
 # Broad visual findings for harvested produce. A single photo cannot establish a pathogen.
 PRODUCE = {
@@ -155,7 +165,7 @@ def inspect_photo(image: Image.Image, crop: str, part: str, language: str,
         'max_completion_tokens': 800 if language == 'Bangla' else 500,
         'response_format': {'type': 'json_object'},
         'messages': [
-            {'role': 'system', 'content': INSTRUCTIONS},
+            {'role': 'system', 'content': INSTRUCTIONS + ('\n\n' + POTATO_FOLIAGE if crop == 'potato' and part != 'other' else '')},
             {'role': 'user', 'content': [
                 {'type': 'text', 'text': prompt},
                 {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + encoded}},

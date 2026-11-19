@@ -140,9 +140,35 @@ def test_failed_email_submission_does_not_leave_a_usable_challenge(client, mail,
         assert db.execute(text('SELECT COUNT(*) FROM email_verifications')).scalar_one() == 0
 
 
+@pytest.mark.parametrize(('contact', 'role'), [('+8801712345678', 'farmer'), ('buyer@example.test', 'customer')])
+def test_password_signup_without_delivery(client, mail, monkeypatch, contact, role):
+    monkeypatch.delenv('SMTP_PASSWORD')
+    details = profile() | {'role': role}
+    body = {'contact': contact, 'profile': details}
+    signup = '/api/v1/auth/signup'
+    invalid = client.post(signup, json=body | {'profile': details | {'role': 'admin'}})
+    assert invalid.status_code == 422 and details['password'] not in invalid.text
+    account = client.post(signup, json=body)
+    assert account.status_code == 200, account.text
+    assert account.json()['user']['role'] == role
+    assert client.post(signup, json=body).status_code == 409
+    credentials = {'contact': contact, 'password': details['password']}
+    assert client.post('/api/v1/auth/password', json=credentials | {'password': 'wrong'}).status_code == 401
+    session = client.post('/api/v1/auth/password', json=credentials).json()
+    assert session['user']['id'] == account.json()['user']['id']
+    headers = {'Authorization': 'Bearer ' + session['token']}
+    assert client.get('/api/v1/market/farmer/dashboard', headers=headers).status_code == (200 if role == 'farmer' else 403)
+    assert client.get('/api/v1/market/cart', headers=headers).status_code == (200 if role == 'customer' else 403)
+    monkeypatch.setenv('SMTP_PASSWORD', 'private-app-password')
+    if '@' in contact:
+        challenge = client.post('/api/v1/auth/otp/start', json={'contact': contact, 'purpose': 'login'})
+        assert challenge.status_code == 200
+    assert mail == []
+
+
 def test_unconfigured_email_and_disabled_sms_cannot_send(client, mail, monkeypatch):
     monkeypatch.delenv('SMTP_PASSWORD')
-    assert client.get('/api/v1/auth/options').json()['signup'] is False
+    assert client.get('/api/v1/auth/options').json()['signup'] is True
     for contact in ['farmer@example.test', '+8801712345678']:
         response = client.post('/api/v1/auth/otp/start', json={'contact': contact, 'purpose': 'signup'})
         assert response.status_code == 503
