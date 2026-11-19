@@ -1,6 +1,7 @@
 node_modules/
 .next/
 apps/web/.next-rescue-e2e/
+apps/web/.next-otp-check/
 .venv/
 __pycache__/
 .pytest_cache/

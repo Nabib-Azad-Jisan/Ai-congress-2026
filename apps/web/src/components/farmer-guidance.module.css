@@ -1,0 +1,152 @@
+.questions {
+  display: grid;
+  gap: 16px;
+  margin: 16px 0 20px;
+}
+
+.group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.group legend {
+  margin-bottom: 7px;
+  padding: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.group .choice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.choice:has(input:checked) {
+  background: var(--mint);
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
+.choice:has(input:focus-visible) {
+  outline: 3px solid var(--text);
+  outline-offset: 2px;
+}
+
+.choice:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: .65;
+}
+
+.group .choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.card {
+  min-width: 0;
+  margin: 0 0 20px;
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid var(--line);
+  border-inline-start: 4px solid var(--primary);
+  border-radius: 10px;
+  background: var(--mint);
+  color: var(--text);
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: clamp(21px, 3vw, 26px);
+  line-height: 1.4;
+  letter-spacing: normal;
+}
+
+.card .action {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.card .checks {
+  margin: 0 0 12px;
+  padding-inline-start: 1.3em;
+  list-style: disc;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.card .reason, .card .summary {
+  margin: 7px 0 12px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.referral {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--muted);
+}
+
+.card .call {
+  min-height: 44px;
+  margin: 0;
+  color: white;
+  font-size: 15px;
+  text-align: start;
+  white-space: normal;
+}
+
+.referral h3 {
+  margin: 15px 0 0;
+  font-size: 16px;
+  letter-spacing: normal;
+}
+
+.sources {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sources a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: .15em;
+}

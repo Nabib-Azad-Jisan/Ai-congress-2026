@@ -1,0 +1,61 @@
+AgroDoctor spoken guidance
+
+The MP3s in this directory were synthesized from AgroDoctor's fixed bilingual
+guidance sentences using the offline Piper 1.8.0 engine. The build script is
+scripts/generate_doctor_speech.py. Both ONNX voices were obtained from
+rhasspy/piper-voices at revision 04ca88f5685ca5253c701af3687e155b113bd512.
+
+Bengali
+
+bn_BD-google-medium.onnx, speaker 0. Voice card and upstream notices:
+https://huggingface.co/rhasspy/piper-voices/blob/04ca88f5685ca5253c701af3687e155b113bd512/bn/bn_BD/google/medium/MODEL_CARD
+
+Based on the Bengali TTS dataset collected by Google (OpenSLR SLR37) and the
+CMU Indic speech database. The upstream model card credits the Hi-Fi TTS base
+model, reader 92, Cori Samuel. The original audio was used to train the voice;
+these clips are newly synthesized readings of AgroDoctor guidance.
+https://www.openslr.org/37/
+http://festvox.org/cmu_indic/
+
+The Bengali MP3s are provided under Creative Commons Attribution-ShareAlike
+4.0 International. Attribute AgroDoctor, the Piper bn_BD-google-medium voice,
+Google OpenSLR SLR37, and CMU Indic when redistributing these audio files.
+https://creativecommons.org/licenses/by-sa/4.0/
+
+English
+
+en_US-ljspeech-medium.onnx. The upstream model was trained by Bryce Beattie
+from the public-domain LJ Speech Dataset compiled by Keith Ito and Linda Johnson.
+https://huggingface.co/rhasspy/piper-voices/blob/04ca88f5685ca5253c701af3687e155b113bd512/en/en_US/ljspeech/medium/MODEL_CARD
+https://keithito.com/LJ-Speech-Dataset/
+
+## CMU License
+
+                  Language Technologies Institute                      
+                     Carnegie Mellon University                        
+                       Copyright (c) 2009-2017
+                        All Rights Reserved.                           
+                                                                       
+  Permission is hereby granted, free of charge, to use and distribute  
+  this data, software and its documentation without restriction, including   
+  without limitation the rights to use, copy, modify, merge, publish,  
+  distribute, sublicense, and/or sell copies of this work, and to      
+  permit persons to whom this work is furnished to do so, subject to   
+  the following conditions:                                            
+   1. The code must retain the above copyright notice, this list of    
+      conditions and the following disclaimer.                         
+   2. Any modifications must be clearly marked as such.                
+   3. Original authors' names are not deleted.                         
+   4. The authors' names are not used to endorse or promote products   
+      derived from this software without specific prior written        
+      permission.                                                      
+                                                                       
+  CARNEGIE MELLON UNIVERSITY AND THE CONTRIBUTORS TO THIS WORK         
+  DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, INCLUDING      
+  ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT   
+  SHALL CARNEGIE MELLON UNIVERSITY NOR THE CONTRIBUTORS BE LIABLE      
+  FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES    
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN   
+  AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,          
+  ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF       
+  THIS SOFTWARE.

@@ -7,7 +7,6 @@ import io
 import json
 import os
 import secrets
-import warnings
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -25,8 +24,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
-from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import delete, select, text
+from PIL import Image
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
 
@@ -37,6 +36,9 @@ from .otp_auth import router as otp_router, demo_login_enabled, open_identity
 from .rescue import router as rescue_router
 from . import market_models, market_service
 from .db import Base, Reading, Record, SignupIdentity, Token, User, engine, ensure_compat_schema, get_db, now
+from . import doctor_vision, farmer_chat
+from .doctor_context import FarmerContext
+from .doctor_photos import case_photo_paths, decode_photo, read_upload
 from .doctor_models import CROPS, DoctorRegistry, normalize_crop
 from .schemas import (
     ActionUpdate,
@@ -90,6 +92,7 @@ async def lifespan(app: FastAPI):
     ensure_compat_schema(engine)
     app.state.instance_id = uuid4().hex
     app.state.market_auth_limiter = AuthLimiter()
+    app.state.farmer_chat_limiter = AuthLimiter(ip_limit=60, identity_limit=14, by_destination=True)
     yield
 
 
@@ -187,6 +190,7 @@ def owned(db: DBSession, user: User, id: str, kind: str | None = None) -> Record
 def view(r: Record, *, include_kind: bool = False, strip_secrets: bool = False) -> dict[str, Any]:
     reserved = {
         'id', 'created_at', 'updated_at', 'plot_id', 'farm_id', 'source_record_id', 'kind', 'owner_id',
+        'follow_up_image_file', 'follow_up_checksum',
     }
     payload = {k: v for k, v in (r.payload or {}).items() if k not in reserved}
     data = dict(
@@ -416,10 +420,10 @@ def _plots_for_farm(db: DBSession, user: User, farm_id: str) -> list[Record]:
     return [p for p in records(db, user, 'plot') if p.payload.get('farm_id') == farm_id]
 
 
-def _delete_case_artifacts(db: DBSession, user: User, case: Record) -> None:
-    image_name = (case.payload or {}).get('image_file')
-    if image_name:
-        (storage / image_name).unlink(missing_ok=True)
+def _delete_case_artifacts(db: DBSession, user: User, case: Record) -> list[Path]:
+    files = case_photo_paths(storage, case.payload)
+    db.execute(delete(Record).where(Record.owner_id == user.id, Record.kind == 'farmer_chat',
+                                    Record.source_record_id == case.id))
     for fb in list(records(db, user, 'feedback', case.plot_id)):
         if fb.source_record_id == case.id or fb.payload.get('case_id') == case.id:
             db.delete(fb)
@@ -438,19 +442,22 @@ def _delete_case_artifacts(db: DBSession, user: User, case: Record) -> None:
         if note.source_record_id == case.id or note.payload.get('source_record_id') == case.id:
             db.delete(note)
     db.delete(case)
+    return files
 
 
-def _cascade_plot(db: DBSession, user: User, plot: Record) -> None:
+def _cascade_plot(db: DBSession, user: User, plot: Record) -> list[Path]:
     plot_id = plot.id
+    files = []
     for case in list(records(db, user, 'case', plot_id)):
-        _delete_case_artifacts(db, user, case)
-    for kind in ('weather', 'action', 'notification', 'feedback', 'comparison_scenario', 'comparison', 'rescue_plan'):
+        files.extend(_delete_case_artifacts(db, user, case))
+    for kind in ('weather', 'action', 'notification', 'feedback', 'comparison_scenario', 'comparison', 'rescue_plan', 'farmer_chat'):
         for r in list(records(db, user, kind, plot_id)):
             db.delete(r)
     for device in list(records(db, user, 'device', plot_id)):
         db.execute(delete(Reading).where(Reading.device_id == device.id))
         db.delete(device)
     db.delete(plot)
+    return files
 
 
 def custom_openapi():
@@ -691,11 +698,15 @@ def delete_farm(id: str, user: Who, db: Db):
         for product in tx.scalars(select(market_models.Product).where(market_models.Product.farm_id==id)): product.farm_id=None
         for order in tx.scalars(select(market_models.SellerOrder).where(market_models.SellerOrder.farm_id==id)): order.farm_id=None
         plots = _plots_for_farm(tx, actor, id)
-        for plot in plots: _cascade_plot(tx, actor, plot)
+        files = []
+        for plot in plots:
+            files.extend(_cascade_plot(tx, actor, plot))
         tx.delete(farm)
         if _prefs(actor).get('selected_plot_id') in {plot.id for plot in plots}: actor.preferences={**_prefs(actor),'selected_plot_id':None}
         audit(tx, actor, 'farm.deleted', id)
-        return {'ok':True,'deleted_id':id,'deleted_plots':len(plots)}
+    for path in files:
+        path.unlink(missing_ok=True)
+    return {'ok':True,'deleted_id':id,'deleted_plots':len(plots)}
 
 
 @app.get('/api/v1/locations/search')
@@ -766,15 +777,18 @@ def edit_plot(id: str, body: PlotPatch, user: Who, db: Db):
 
 
 @app.delete('/api/v1/plots/{id}')
-def delete_plot(id: str, user: Who, db: Db):
-    p = owned(db, user, id, 'plot')
-    _cascade_plot(db, user, p)
-    prefs = _prefs(user)
-    if prefs.get('selected_plot_id') == id:
-        remaining = records(db, user, 'plot')
-        user.preferences = {**prefs, 'selected_plot_id': remaining[0].id if remaining else None}
-    audit(db, user, 'plot.deleted', id)
-    db.commit()
+def delete_plot(id: str, user: Who):
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx, user)
+        p = owned(tx, actor, id, 'plot')
+        files = _cascade_plot(tx, actor, p)
+        prefs = _prefs(actor)
+        if prefs.get('selected_plot_id') == id:
+            remaining = records(tx, actor, 'plot')
+            actor.preferences = {**prefs, 'selected_plot_id': remaining[0].id if remaining else None}
+        audit(tx, actor, 'plot.deleted', id)
+    for path in files:
+        path.unlink(missing_ok=True)
     return {'ok': True, 'deleted_id': id}
 
 
@@ -799,6 +813,11 @@ def conditions(crop: str = 'tomato'):
         crop = normalize_crop(crop)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if doctor_vision.configured():
+        return {'crop': crop, 'supported_model_labels': [],
+                'guidance': ['Photograph the affected part in focus and in natural light.'],
+                'source': doctor_vision.SOURCE, 'disclaimer': doctor_vision.LIMIT,
+                'ood_scope': 'Open-ended visual assessment of leaves and produce.', 'limitations': [doctor_vision.LIMIT]}
     capability = next(c for c in DoctorRegistry().capabilities()['crops'] if c['id'] == crop)
     return {
         'crop': crop,
@@ -820,18 +839,35 @@ _preview_uploads: OrderedDict[str, deque[float]] = OrderedDict()
 _preview_upload_lock = Lock()
 
 
-def limit_screening_preview(user_id: str) -> None:
+def limit_screening_preview(user_id: str, image_count: int = 1) -> None:
     with _preview_upload_lock:
         current = monotonic()
         uploads = _preview_uploads.setdefault(user_id, deque())
         _preview_uploads.move_to_end(user_id)
         while uploads and uploads[0] <= current - 60:
             uploads.popleft()
-        if len(uploads) >= 6:
-            raise HTTPException(429, 'Preview limit: six images per minute')
-        uploads.append(current)
+        if len(uploads) + image_count > 6:
+            raise HTTPException(429, 'Screening limit: six images per minute')
+        uploads.extend([current] * image_count)
         if len(_preview_uploads) > 4096:
             _preview_uploads.popitem(last=False)
+
+
+def _screen_meta(result: dict) -> dict:
+    if result['model']['model_id'] == 'groq-vision':
+        return provenance('LIVE', 'Groq vision · ' + result['model']['version'], source_url=doctor_vision.SOURCE)
+    return provenance('MIXED' if result['model'].get('available') else 'DEMO', 'user_upload; ' + result['model']['version'])
+
+
+def _confirmed_plot_crop(result: dict) -> bool:
+    return result['assessment']['crop_match'] == 'match' and result['assessment']['outcome'] != 'unrelated'
+
+
+def _screening_action(db: DBSession, user: User, case: Record):
+    result = case.payload
+    upsert_action(db, user, case.plot_id, 'doctor', 'Review your crop photo screening',
+                  result['status'] + ': ' + result['advice'][0], result['meta'], source_record_id=case.id,
+                  fingerprint=evidence_fingerprint('doctor', {'case_id': case.id}))
 
 
 @app.post('/api/v1/doctor/cases')
@@ -842,11 +878,25 @@ def upload(
     plot_id: Annotated[str | None, Form()] = None,
     symptoms: Annotated[str, Form(max_length=2000)] = '',
     crop: Annotated[str | None, Form()] = None,
+    plant_part: Annotated[Literal['auto', 'leaf', 'other'], Form()] = 'auto',
+    locale: Annotated[Literal['en', 'bn'], Form()] = 'en',
+    follow_up_image: Annotated[UploadFile | None, File()] = None,
+    farmer_context: Annotated[str | None, Form(max_length=512)] = None,
 ):
+    use_vision = doctor_vision.configured()
     p = owned(db, user, plot_id, 'plot') if plot_id is not None else None
+    context = FarmerContext.from_form(farmer_context).model_dump() if farmer_context is not None else None
+    if follow_up_image is not None:
+        if p is not None:
+            raise HTTPException(422, 'Use the saved case follow-up endpoint to attach a second photo.')
+        if not use_vision:
+            raise HTTPException(503, 'Two-photo screening requires Groq vision.')
     try:
         plot_crop = normalize_crop(p.payload.get('crop', 'tomato')) if p is not None else None
-        selected_crop = normalize_crop(crop) if crop is not None else plot_crop
+        if use_vision and crop == 'auto' and p is None:
+            selected_crop = 'auto'
+        else:
+            selected_crop = normalize_crop(crop) if crop is not None else plot_crop
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if selected_crop is None:
@@ -856,50 +906,44 @@ def upload(
     recent = [r for r in records(db, user, 'case') if r.created_at > (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()]
     if len(recent) >= 6:
         raise HTTPException(429, 'Upload limit: six images per minute')
-    if Path(image.filename or '').suffix.lower() not in ('.jpg', '.jpeg', '.png', '.webp'):
-        raise HTTPException(415, 'Use JPG, PNG or WebP')
-    data = image.file.read(8 * 1024 * 1024 + 1)
-    if len(data) > 8 * 1024 * 1024:
-        raise HTTPException(413, 'Maximum upload is 8 MB')
-    if p is None:
-        limit_screening_preview(user.id)
+    data = read_upload(image)
+    second_data = read_upload(follow_up_image) if follow_up_image is not None else None
+    if plant_part == 'other' and not use_vision:
+        raise HTTPException(503, 'Produce screening requires Groq vision. Configure the server API key.')
+    if p is None or use_vision:
+        limit_screening_preview(user.id, 2 if second_data is not None else 1)
+    # Release the read connection during inference. Saving rechecks ownership in a new transaction.
+    db.commit()
     slot = acquire_upload_slot()
     try:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('error', Image.DecompressionBombWarning)
-                with Image.open(io.BytesIO(data)) as decoded:
-                    if decoded.format not in ('JPEG', 'PNG', 'WEBP') or getattr(decoded, 'n_frames', 1) != 1:
-                        raise ValueError('Use a single still photo')
-                    if decoded.width * decoded.height > 20_000_000:
-                        raise ValueError('Image exceeds pixel limit')
-                    decoded.verify()
-                with Image.open(io.BytesIO(data)) as decoded:
-                    oriented = ImageOps.exif_transpose(decoded)
-                    # Composite transparency before RGB conversion; discarded EXIF is never stored.
-                    rgba = oriented.convert('RGBA')
-                    im = Image.new('RGB', rgba.size, 'white')
-                    im.paste(rgba, mask=rgba.getchannel('A'))
-        except (UnidentifiedImageError, OSError, SyntaxError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
-            raise HTTPException(415, 'Invalid image, animated image or excessive dimensions. Use one JPG, PNG or WebP photo.')
-        result = DoctorRegistry().infer(im, selected_crop)
+        im = decode_photo(data)
+        if use_vision:
+            second = decode_photo(second_data) if second_data is not None else None
+            result = DoctorRegistry().screen_with_vision(im, selected_crop, plant_part, locale, second)
+        else:
+            result = DoctorRegistry().infer(im, selected_crop)
     finally:
         slot.release()
-    meta = provenance('MIXED' if result['model'].get('available') else 'DEMO', 'user_upload; ' + result['model']['version'])
+    result.update(meta=_screen_meta(result), screening_locale=locale, photo_count=2 if second_data is not None else 1)
+    if context is not None:
+        result['farmer_context'] = context
+    if use_vision and p is not None and not _confirmed_plot_crop(result):
+        return {**result, 'save_notice': 'plot_crop_unconfirmed'}
     if p is None:
-        return {**result, 'meta': meta}
+        return result
     filename = uuid4().hex + '.jpg'
     try:
-        im.save(storage / filename, 'JPEG', quality=90)
-        r = add(db, user, 'case', {**result, 'plot_name':p.payload['name'],
-            'symptoms':symptoms, 'image_file':filename, 'checksum':hashlib.sha256(data).hexdigest(), 'meta':meta}, plot_id)
-        upsert_action(db, user, plot_id, 'doctor', 'Review your leaf screening',
-            result['status'] + ': ' + result['advice'][0], meta, source_record_id=r.id,
-            fingerprint=evidence_fingerprint('doctor', {'case_id': r.id}))
-        audit(db, user, 'diagnosis.created', r.id, plot_id)
-        db.commit()
+        with market_service.transaction() as tx:
+            actor = market_service.actor(tx, user, roles={'farmer'})
+            plot = owned(tx, actor, plot_id, 'plot')
+            if normalize_crop(plot.payload.get('crop', 'tomato')) != selected_crop:
+                raise HTTPException(409, 'The plot crop changed during screening. Choose the matching plot and try again.')
+            im.save(storage / filename, 'JPEG', quality=90)
+            r = add(tx, actor, 'case', {**result, 'plot_name': plot.payload['name'], 'symptoms': symptoms,
+                    'image_file': filename, 'checksum': hashlib.sha256(data).hexdigest()}, plot_id)
+            _screening_action(tx, actor, r)
+            audit(tx, actor, 'diagnosis.created', r.id, plot_id)
     except Exception:
-        db.rollback()
         (storage / filename).unlink(missing_ok=True)
         raise
     return _case_view(r)
@@ -910,6 +954,9 @@ def _case_view(c: Record) -> dict:
     data.setdefault('crop', 'tomato')  # Pre-multicrop records retain their original tomato snapshot.
     filename = c.payload.get('image_file')
     data['image_available'] = bool(filename and (storage / Path(filename).name).is_file())
+    second = c.payload.get('follow_up_image_file')
+    data['second_photo_available'] = bool(second and (storage / Path(second).name).is_file())
+    data.setdefault('photo_count', 2 if second else 1)
     return data
 
 
@@ -962,16 +1009,79 @@ def list_feedback(id: str, user: Farmer, db: Db):
     return _case_feedback(db, user, id, c.plot_id)
 
 
+def _case_image_bytes(payload: dict, view: str) -> bytes:
+    filename = payload.get('follow_up_image_file' if view == 'follow_up' else 'image_file')
+    if filename:
+        try:
+            return (storage / Path(filename).name).read_bytes()
+        except FileNotFoundError:
+            pass
+    raise HTTPException(410, 'This image is unavailable. The saved assessment can still be viewed and exported.')
+
+
 @app.get('/api/v1/doctor/cases/{id}/image')
-def case_image(id: str, user: Farmer, db: Db):
-    filename = owned(db, user, id, 'case').payload.get('image_file')
-    image_path = storage / Path(filename).name if filename else None
-    if not image_path or not image_path.is_file():
-        raise HTTPException(
-            410,
-            'This image is no longer available. Free demo hosts may clear photo files after a restart; case metadata can still be exported.',
-        )
-    return Response(image_path.read_bytes(), media_type='image/jpeg')
+def case_image(id: str, user: Farmer, db: Db, view: Literal['original', 'follow_up'] = 'original'):
+    payload = owned(db, user, id, 'case').payload
+    return Response(_case_image_bytes(payload, view), media_type='image/jpeg')
+
+
+def _follow_up_exists(case: Record, checksum: str, locale: str) -> bool:
+    if not case.payload.get('follow_up_image_file'):
+        return False
+    if case.payload.get('follow_up_checksum') == checksum and case.payload.get('screening_locale') == locale:
+        return True
+    raise HTTPException(409, 'This case already has a second photo and a combined assessment.')
+
+
+@app.post('/api/v1/doctor/cases/{id}/follow-up')
+def follow_up(id: str, user: Farmer, db: Db, image: Annotated[UploadFile, File()],
+              locale: Annotated[Literal['en', 'bn'] | None, Form()] = None):
+    case = owned(db, user, id, 'case')
+    if case.payload.get('model', {}).get('model_id') != 'groq-vision' or not case.payload.get('assessment'):
+        raise HTTPException(409, 'A second photo can be attached to a vision screening case.')
+    locale = locale or case.payload.get('screening_locale', 'en')
+    data = read_upload(image)
+    checksum = hashlib.sha256(data).hexdigest()
+    if _follow_up_exists(case, checksum, locale):
+        return _case_view(case)
+    if not doctor_vision.configured():
+        raise HTTPException(503, 'Two-photo screening requires Groq vision.')
+    limit_screening_preview(user.id)
+    db.commit()
+    slot = acquire_upload_slot()
+    try:
+        second = decode_photo(data)
+        original = decode_photo(_case_image_bytes(case.payload, 'original'))
+        result = DoctorRegistry().screen_with_vision(original, case.payload.get('crop', 'tomato'), 'auto', locale, second)
+    finally:
+        slot.release()
+    if not _confirmed_plot_crop(result):
+        raise HTTPException(422, 'The two photos could not confirm the crop in this case. Use another view of the same crop.')
+    result.update(photo_count=2, screening_locale=locale, meta=_screen_meta(result))
+    filename = uuid4().hex + '.jpg'
+    try:
+        # Re-read after slow inference. Deletions and other attachments use the same short write transaction.
+        with market_service.transaction() as tx:
+            actor = market_service.actor(tx, user, roles={'farmer'})
+            current = owned(tx, actor, id, 'case')
+            if _follow_up_exists(current, checksum, locale):
+                return _case_view(current)
+            second.save(storage / filename, 'JPEG', quality=90)
+            payload = dict(current.payload)
+            payload.pop('cross_check_model', None)
+            if 'screening_locale' in payload:
+                payload['initial_screening_locale'] = payload['screening_locale']
+            payload.update(initial_assessment=payload['assessment'],
+                           follow_up_recorded_at=iso_now(),
+                           follow_up_image_file=filename, follow_up_checksum=checksum, **result)
+            current.payload = payload
+            touch(current)
+            _screening_action(tx, actor, current)
+            audit(tx, actor, 'doctor.follow_up_added', id, current.plot_id)
+    except Exception:
+        (storage / filename).unlink(missing_ok=True)
+        raise
+    return _case_view(current)
 
 
 @app.post('/api/v1/doctor/cases/{id}/feedback')
@@ -995,7 +1105,8 @@ def report(id: str, user: Farmer, db: Db):
     c = owned(db, user, id, 'case')
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(['case_id', 'created_at', 'crop', 'plot_id', 'plot_name', 'status', 'possible_condition', 'model', 'source_revision', 'mode', 'limitations'])
+    assessment = c.payload.get('assessment', {})
+    writer.writerow(['case_id', 'created_at', 'crop', 'plot_id', 'plot_name', 'status', 'possible_condition', 'model', 'source_revision', 'mode', 'limitations', 'visible_signs', 'explanation', 'uncertainty', 'next_steps'])
     writer.writerow([
         c.id,
         c.created_at,
@@ -1008,6 +1119,8 @@ def report(id: str, user: Farmer, db: Db):
         c.payload['model'].get('revision','legacy'),
         c.payload['meta']['mode'],
         c.payload['disclaimer'],
+        ' | '.join(assessment.get('signs', [])), assessment.get('explanation', ''), assessment.get('uncertainty', ''),
+        ' | '.join(c.payload.get('advice', [])),
     ])
     audit(db, user, 'case.exported', id, c.plot_id)
     db.commit()
@@ -1015,12 +1128,14 @@ def report(id: str, user: Farmer, db: Db):
 
 
 @app.delete('/api/v1/doctor/cases/{id}')
-def delete_case(id: str, user: Farmer, db: Db):
-    c = owned(db, user, id, 'case')
-    plot_id = c.plot_id
-    _delete_case_artifacts(db, user, c)
-    audit(db, user, 'case.deleted', id, plot_id)
-    db.commit()
+def delete_case(id: str, user: Farmer):
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx, user)
+        c = owned(tx, actor, id, 'case')
+        files = _delete_case_artifacts(tx, actor, c)
+        audit(tx, actor, 'case.deleted', id, c.plot_id)
+    for path in files:
+        path.unlink(missing_ok=True)
     return {'ok': True, 'deleted_id': id}
 
 
@@ -1407,8 +1522,7 @@ def actions_list(user: Who, db: Db, plot_id: str | None = None):
 
 
 @app.patch('/api/v1/actions/{id}')
-def update_action(id: str, body: ActionUpdate, user: Who, db: Db):
-    r = owned(db, user, id, 'action')
+def update_action(id: str, body: ActionUpdate, user: Who):
     updates = body.model_dump(exclude_unset=True, mode='json')
     if updates.get('status') == 'snoozed':
         if body.snoozed_until is not None:
@@ -1419,10 +1533,12 @@ def update_action(id: str, body: ActionUpdate, user: Who, db: Db):
             updates['snoozed_until'] = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
     if updates.get('status') == 'open':
         updates['snoozed_until'] = None
-    r.payload = {**r.payload, **updates}
-    touch(r)
-    audit(db, user, 'action.acknowledged', id, r.plot_id)
-    db.commit()
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx, user)
+        r = owned(tx, actor, id, 'action')
+        r.payload = {**r.payload, **updates}
+        touch(r)
+        audit(tx, actor, 'action.acknowledged', id, r.plot_id)
     return view(r)
 
 
@@ -1711,6 +1827,7 @@ def export(user: Who, db: Db, response: Response):
         payload.pop('key_hash', None)
         # Keep image_file name out of export; binaries are separate authorized downloads
         payload.pop('image_file', None)
+        payload.pop('follow_up_image_file', None)
         exported.append(dict(
             id=r.id,
             kind=r.kind,
@@ -1766,6 +1883,154 @@ def export(user: Who, db: Db, response: Response):
 @app.delete('/api/v1/me')
 def delete_account(user: Who, db: Db):
     return erase_market_account(user, storage)
+
+
+def _chat_scope(db, user, plot_id, case_id):
+    case = owned(db, user, case_id, 'case') if case_id else None
+    if case and plot_id and plot_id != case.plot_id:
+        raise HTTPException(422, 'This screening belongs to a different plot')
+    plot_id = case.plot_id if case else plot_id
+    return (owned(db, user, plot_id, 'plot') if plot_id else None), case
+
+
+def _chat_snapshot(db, user, plot, case):
+    result = {}
+    if plot:
+        result['plot'] = farmer_chat.pick(plot.payload, ('crop','stage','sowing_date','area_acres','low_lying'))
+        result['plot']['source'] = (plot.payload.get('meta') or {}).get('source_name','farmer record')
+        farm = owned(db, user, plot.farm_id or plot.payload['farm_id'], 'farm')
+        result['district'] = farm.payload.get('district') or ''
+        coords = [farm.payload.get(k) for k in ('latitude','longitude')]
+        if farm.payload.get('location_consent') is True and all(n is not None for n in coords):
+            result['coordinates'] = tuple(coords)
+        result['tasks'] = [farmer_chat.pick(r.payload, ('title','topic','status'))
+                           for r in records(db,user,'action',plot.id) if r.payload.get('status')=='open'][:8]
+        saved = records(db,user,'weather',plot.id)
+        if saved and result.get('coordinates'):
+            weather = compute_effective_weather(saved[0].payload)
+            meta = weather.get('meta') or {}
+            if meta.get('mode')=='LIVE' and meta.get('source_name')=='Open-Meteo' and not meta.get('is_simulated'):
+                result['saved_weather'] = {**farmer_chat.pick(weather, ('total_mm','horizon_hours','valid_from','horizon_valid_until')),
+                                           'status':'saved forecast · '+str(meta.get('freshness','unknown'))}
+    if case:
+        result['case_id'] = case.id
+        result['case'] = dict(farmer_chat.case_evidence(case.payload), created_at=case.created_at)
+        result['case']['farmer_notes'] = [r['note'][:400] for r in _case_feedback(db,user,case.id,case.plot_id)[:4] if r.get('note')]
+    return result
+
+
+def _chat_quotes(owner_id, crop, trade_type, market, observed_on):
+    p = Record.payload
+    query = select(Record).where(
+        Record.owner_id==owner_id, Record.kind=='price',func.lower(p['commodity'].as_string())==crop.casefold(),
+        p['meta']['is_simulated'].as_boolean().is_(False), p['meta']['mode'].as_string()!='DEMO')
+    if trade_type:
+        query = query.where(p['price_type'].as_string()==trade_type)
+    if market:
+        query = query.where(func.lower(p['market'].as_string()).contains(market, autoescape=True))
+    if observed_on:
+        query = query.where(p['observed_at'].as_string().startswith(observed_on))
+    with DBSession(engine) as tx:
+        quotes = [_price_view(row) for row in tx.scalars(query.order_by(p['observed_at'].as_string().desc(),Record.created_at.desc()).limit(4))]
+    return [{**farmer_chat.pick(q,('market','commodity','price','unit','price_type','observed_at')),
+             'source':q['meta'].get('source_name'),'freshness':q['meta'].get('freshness')} for q in quotes]
+
+
+def _chat_response(thread):
+    return {'conversation_id':thread.id, 'messages':thread.payload['messages']}
+
+
+@app.get('/api/v1/farmer-chat/conversations/{id}')
+def farmer_conversation(id: str, user: Farmer, db: Db):
+    return _chat_response(owned(db,user,id,'farmer_chat'))
+
+
+@app.get('/api/v1/farmer-chat/conversations')
+def farmer_conversations(user: Farmer, db: Db, plot_id: str | None=None, case_id: str | None=None):
+    plot, _ = _chat_scope(db,user,plot_id,case_id)
+    query = select(Record.id, Record.updated_at).where(
+        Record.owner_id==user.id, Record.kind=='farmer_chat', Record.source_record_id==case_id,
+        Record.plot_id==(plot.id if plot else None)).order_by(Record.updated_at.desc()).limit(30)
+    return {'items':[{'id':key, 'updated_at':stamp} for key,stamp in db.execute(query)]}
+
+
+def _chat_repeat(thread, body):
+    if thread is None:
+        return False
+    for entry in thread.payload['messages']:
+        if entry['role']=='user' and entry['id']==body.request_id:
+            if entry['text'] != body.message:
+                raise HTTPException(409, 'This request already has a different message')
+            return True
+    return False
+
+
+@app.post('/api/v1/farmer-chat/messages')
+def farmer_message(body: farmer_chat.ChatInput, user: Farmer, db: Db, request: Request):
+    # The first message can safely be retried before the browser receives its conversation ID.
+    thread_id = body.conversation_id or hashlib.sha256(f'farmer-chat:{user.id}:{body.request_id}'.encode()).hexdigest()
+    thread = owned(db,user,thread_id,'farmer_chat') if body.conversation_id else db.get(Record,thread_id)
+    plot, case = _chat_scope(db,user,body.plot_id,body.case_id)
+    plot_id = plot.id if plot else None
+    if thread and (thread.owner_id!=user.id or thread.kind!='farmer_chat' or thread.plot_id!=plot_id
+                   or thread.source_record_id!=body.case_id):
+        raise HTTPException(409,'This conversation belongs to a different farm context')
+    if _chat_repeat(thread,body):
+        return _chat_response(thread)
+    try:
+        request.app.state.farmer_chat_limiter.check(request.client.host if request.client else 'unknown', user.id)
+    except HTTPException as exc:
+        raise HTTPException(429,'Farmer chat is busy. Try again shortly.',headers=exc.headers) from exc
+    history = thread.payload['messages'] if thread else []
+    if len(history)>=80:
+        raise HTTPException(409,'This conversation is full. Start a new chat.')
+    snapshot = _chat_snapshot(db,user,plot,case)
+    state = thread.payload.get('state',{}) if thread else {}
+    farm_id = plot.farm_id if plot else None
+    db.commit()
+    message, new_state = farmer_chat.make_turn(body.message,body.locale,history,state,snapshot,
+        quote_lookup=lambda *filters: _chat_quotes(user.id,*filters))
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx,user,roles={'farmer'})
+        _chat_scope(tx,actor,plot_id,body.case_id)
+        current = tx.get(Record,thread_id)
+        if _chat_repeat(current,body):
+            return _chat_response(current)
+        if (current is None and thread is not None) or (current and len(current.payload['messages'])!=len(history)):
+            raise HTTPException(409,'The conversation changed. Reopen it before sending again.')
+        messages = [*(current.payload['messages'] if current else []),
+                    dict(id=body.request_id, role='user', text=body.message),
+                    dict(id=uuid4().hex, role='assistant', **message)]
+        payload = dict(messages=messages,state=new_state)
+        if current is None:
+            current = Record(id=thread_id, owner_id=actor.id, kind='farmer_chat', plot_id=plot_id,
+                             farm_id=farm_id,source_record_id=body.case_id,payload=payload)
+            tx.add(current)
+        else:
+            current.payload = payload
+            touch(current)
+        return _chat_response(current)
+
+
+@app.post('/api/v1/farmer-chat/conversations/{id}/notes')
+def confirm_chat_note(id: str, body: farmer_chat.SaveNote, user: Farmer):
+    with market_service.transaction() as tx:
+        actor = market_service.actor(tx,user,roles={'farmer'})
+        thread = owned(tx,actor,id,'farmer_chat')
+        item = next((m for m in thread.payload['messages'] if m['id']==body.message_id and m['role']=='assistant'),None)
+        pending = next((a for a in (item or {}).get('actions',[]) if a['kind']=='note'),None)
+        if not pending or not thread.source_record_id:
+            raise HTTPException(404,'Case note not found')
+        if pending.get('done'):
+            return _chat_response(thread)
+        case = owned(tx,actor,thread.source_record_id,'case')
+        add(tx,actor,'feedback',dict(case_id=case.id,note=pending['target'],request_review=False,
+            advisor_contacted=False,notice='Local note only; no advisor was contacted.'),case.plot_id,source_record_id=case.id)
+        audit(tx,actor,'doctor.feedback',case.id,case.plot_id)
+        updated = {**item,'actions':[{**a,'done':True} if a is pending else a for a in item['actions']]}
+        thread.payload = {**thread.payload,'messages':[updated if m is item else m for m in thread.payload['messages']]}
+        touch(thread)
+        return _chat_response(thread)
 
 app.include_router(auth_router)
 app.include_router(otp_router)

@@ -1,6 +1,6 @@
 # ZYNTRIX AgroSphere AI
 
-A software-first agricultural workspace: AgroDoctor leaf screening, FloodCrop rainfall preparedness, KrishiMarket net selling comparisons, shared farms, actions and future sensor ingestion.
+A software-first agricultural workspace: AgroDoctor crop-photo screening, FloodCrop rainfall preparedness, KrishiMarket net selling comparisons, shared farms, actions and future sensor ingestion.
 
 For a public website, see [Netlify + free backend deployment](docs/netlify-deployment.md). The root `netlify.toml` configures the frontend and `render.yaml` prepares the separate free Python/PostgreSQL demo backend. Cloud deployment requires account authorization and the real HTTPS backend URL; localhost Docker URLs cannot serve Netlify visitors.
 
@@ -20,7 +20,11 @@ For isolated browser QA, set `AGROSPHERE_NEXT_DIST_DIR=.next-rescue-e2e` and the
 
 ## Multi-crop screening
 
-AgroDoctor now uses two pinned upstream research models for 12 crop groups: apple, cherry, maize, grape, orange, peach, bell pepper, potato, squash, strawberry, tomato and rice. Original three-class tomato artifacts and historical cases are preserved separately. See [multi-crop setup, sources and limitations](docs/agrodoctor-multicrop.md).
+Set `GROQ_API_KEY` in the private root `.env` or API service environment, then restart the API. AgroDoctor sends a metadata-stripped photo to Groq's vision model for leaf and produce screening. It shows visible signs, possible causes, limitations and follow-up checks in the selected language. **Identify from photo** accepts crops outside the plot catalog as an unsaved preview. The model ID defaults to `qwen/qwen3.8-27b` and can be set with `GROQ_VISION_MODEL`. Provider or quota failures are shown in the form. Produce results describe visible damage such as surface mold or internal breakdown. A negative leaf assessment gets an independent check when a matching local leaf model with a healthy reference class is available. A disagreement or missing corroboration yields an uncertain result.
+
+In AgroDoctor, select **Leaf** or **Fruit, vegetable or tuber** and answer the two observation questions. **Not sure** is available for each. The **আজ কী করব?** card adapts its scouting action to the photo and the reported extent, timing or storage context. **শুনুন** reads the card aloud with a local voice or bundled recordings. A second view can be submitted directly from a vision result or an existing saved vision case. Both images are analyzed together. Saved cases retain both views, the farmer's answers and the first assessment. Where further help is appropriate, a Bangla summary and a user-initiated **16123** call link are shown.
+
+Without a Groq key, two pinned local research models support leaf screening for 12 crop groups: apple, cherry, maize, grape, orange, peach, bell pepper, potato, squash, strawberry, tomato and rice. Original three-class tomato artifacts and historical cases are preserved separately. See [multi-crop setup, sources and limitations](docs/agrodoctor-multicrop.md).
 
 Install the active bundles from the repository root before running native inference or local Compose:
 
@@ -34,6 +38,8 @@ Install the active bundles from the repository root before running native infere
 Weights are downloaded from pinned SafeTensor revisions, verified and exported locally; no remote model code runs. Missing models are shown as unavailable. No independent multi-crop accuracy or field validation is claimed. The old `v0.1.0` tomato artifact alone does not enable multi-crop inference.
 
 ## Run locally (Windows, without Docker)
+
+For free email-code verification, follow [Gmail setup](docs/email-setup.md). Optional SMS uses [Twilio setup](docs/sms-setup.md). The API, migrations and worker load private settings from the root `.env`; service environment variables take precedence.
 
 From this directory, create a Python environment and install dependencies:
 
@@ -91,11 +97,11 @@ npm run test:e2e
 
 `docker_verify.py` creates a disposable test workspace, tests actual model inference and all modules, restarts only this stack's API, verifies persisted records and device deduplication, then removes the disposable workspace.
 
-For standalone PostgreSQL, set `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@localhost:5432/agrosphere`, then run migrations and the API. Environment variables must be set in your terminal or service configuration; `.env.example` is a reference, not automatically loaded by every command.
+For standalone PostgreSQL, set `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@localhost:5432/agrosphere`, then run migrations and the API. The Python API, migrations and worker load the root `.env`; `.env.example` remains a reference file. Next.js reads its own frontend environment settings separately.
 
 ## Models and data
 
-See [multi-crop setup](docs/agrodoctor-multicrop.md), [model cards](docs/model_card.md) and [original tomato training instructions](ml/doctor/README.md). The current models have 38 PlantVillage outputs and 17 rice outputs; only disease-enabled crops are selectable. Selecting a crop does not renormalize the model scores. Cross-crop global predictions and scores below 0.85 abstain. Closed-set scores remain uncalibrated and unknown/non-leaf inputs can still score highly.
+See [multi-crop setup](docs/agrodoctor-multicrop.md), [model cards](docs/model_card.md) and [original tomato training instructions](ml/doctor/README.md). The local leaf models have 38 PlantVillage outputs and 17 rice outputs; only disease-enabled crops are selectable. Selecting a crop does not renormalize the model scores. Cross-crop global predictions and scores below 0.85 abstain. Closed-set scores remain uncalibrated and unknown/non-leaf inputs can still score highly.
 
 Runtime uses installed CPU torch/torchvision and checks bundle metadata, checksums and outputs. The 0.958 original tomato holdout accuracy belongs only to the retired three-class artifact, never to these upstream models. Rainfall thresholds remain illustrative; initial market prices are synthetic; official FFWC/DAM links are references.
 

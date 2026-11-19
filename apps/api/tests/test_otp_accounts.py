@@ -1,10 +1,59 @@
 import base64
 from itertools import count
 
+import pytest
 from cryptography.fernet import Fernet
+import httpx
 
 from app import otp_auth
 from tests.test_platform import client, picture
+
+
+@pytest.fixture(autouse=True)
+def configured_sms(monkeypatch):
+    monkeypatch.delenv('TWILIO_ACCOUNT_SID', raising=False)
+    monkeypatch.delenv('TWILIO_AUTH_TOKEN', raising=False)
+    monkeypatch.setenv('TWILIO_VERIFY_SERVICE_SID', 'VA' + 'a' * 32)
+    monkeypatch.setenv('TWILIO_API_KEY_SID', 'SK' + 'b' * 32)
+    monkeypatch.setenv('TWILIO_API_KEY_SECRET', 'test-provider-secret')
+
+
+def test_unconfigured_otp_never_claims_to_send_a_code(client, monkeypatch):
+    monkeypatch.delenv('TWILIO_API_KEY_SECRET')
+    assert client.get('/api/v1/auth/options').json()['otp'] is False
+    response = client.post('/api/v1/auth/otp/start', json={
+        'contact': '+8801712345678', 'purpose': 'login',
+    })
+    assert response.status_code == 503
+    assert 'verification_id' not in response.json()
+
+
+def test_account_sid_and_auth_token_can_send_verification(client, monkeypatch):
+    monkeypatch.delenv('TWILIO_API_KEY_SID')
+    monkeypatch.delenv('TWILIO_API_KEY_SECRET')
+    monkeypatch.setenv('TWILIO_ACCOUNT_SID', 'AC' + 'c' * 32)
+    monkeypatch.setenv('TWILIO_AUTH_TOKEN', 'test-account-token')
+    monkeypatch.setenv('SIGNUP_DATA_KEY', Fernet.generate_key().decode())
+    monkeypatch.setattr(otp_auth, 'send_limit', otp_auth.AuthLimiter())
+    outbound = []
+
+    def provider_post(url, **kwargs):
+        outbound.append((url, kwargs['auth'], kwargs['data']))
+        return httpx.Response(201, request=httpx.Request('POST', url),
+                              json={'sid': 'VE' + 'd' * 32, 'status': 'pending'})
+
+    monkeypatch.setattr(otp_auth.httpx, 'post', provider_post)
+    assert client.get('/api/v1/auth/options').json()['signup'] is True
+    response = client.post('/api/v1/auth/otp/start', json={
+        'contact': '01712345678', 'purpose': 'signup',
+    })
+    assert response.status_code == 200
+    assert response.json()['verification_id'] == 'VE' + 'd' * 32
+    assert outbound == [(
+        'https://verify.twilio.com/v2/Services/VA' + 'a' * 32 + '/Verifications',
+        ('AC' + 'c' * 32, 'test-account-token'),
+        {'To': '+8801712345678', 'Channel': 'sms'},
+    )]
 
 
 def test_otp_signup_login_and_role_permissions(client, monkeypatch):

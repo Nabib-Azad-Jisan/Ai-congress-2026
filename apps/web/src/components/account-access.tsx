@@ -36,10 +36,9 @@ function photoBase64(file: File) {
 export function AccountAccess({locale, marketplace = false}: {locale: Locale; marketplace?: boolean}) {
   const t = (en: string, bn: string) => locale === 'bn' ? bn : en;
   const [purpose, setPurpose] = useState<Purpose>('login');
-  const [channel, setChannel] = useState<'phone' | 'email'>('phone');
+  const [selectedChannel, setChannel] = useState<'phone' | 'email' | null>(null);
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const contact = channel === 'phone' ? '+880' + phone : email;
   const [verificationId, setVerificationId] = useState('');
   const [name, setName] = useState('');
   const [age, setAge] = useState('');
@@ -50,8 +49,22 @@ export function AccountAccess({locale, marketplace = false}: {locale: Locale; ma
   const signup = useRef<SignupProfile | undefined>(undefined);
   const options = useQuery({
     queryKey: ['auth-options'],
-    queryFn: () => request<{otp: boolean; demo: boolean; signup: boolean}>('/auth/options'),
+    queryFn: () => request<{
+      otp: boolean; demo: boolean; signup: boolean;
+      channels?: {email: boolean; sms: boolean}; default_channel?: 'email' | 'phone';
+    }>('/auth/options'),
   });
+  const channel = selectedChannel ?? options.data?.default_channel ?? 'phone';
+  const contact = channel === 'phone' ? '+880' + phone : email;
+  const channelAvailable = options.data?.channels
+    ? options.data.channels[channel === 'phone' ? 'sms' : 'email'] : options.data?.otp;
+  const verificationNotice = options.data && !channelAvailable
+    ? channel === 'phone'
+      ? t('SMS verification is currently unavailable. Please try again later.', 'এসএমএস যাচাই বর্তমানে চালু নেই। পরে আবার চেষ্টা করুন।')
+      : t('Email verification is currently unavailable. Please try again later.', 'ইমেইল যাচাই বর্তমানে চালু নেই। পরে আবার চেষ্টা করুন।')
+    : purpose === 'signup' && options.data && !options.data.signup
+      ? t('Account creation is currently unavailable. Please try again later.', 'অ্যাকাউন্ট তৈরি বর্তমানে চালু নেই। পরে আবার চেষ্টা করুন।')
+      : '';
 
   function finish({token, user}: {token: string; user: {role: Role}}) {
     setSessionToken(token);
@@ -141,12 +154,6 @@ export function AccountAccess({locale, marketplace = false}: {locale: Locale; ma
         </button>)}
       </div>
       <h2 id="account-title">{purpose === 'signup' ? t('Create your account', 'অ্যাকাউন্ট তৈরি করুন') : t('Sign in to AgroSphere', 'অ্যাগ্রোস্ফিয়ারে প্রবেশ করুন')}</h2>
-      {options.data && !options.data.otp && <p className="notice" role="status">
-        {t('Email and SMS codes are unavailable on this server until the verification provider is configured.', 'যাচাই সেবা সেটআপ না হওয়া পর্যন্ত এই সার্ভারে ইমেইল ও এসএমএস কোড পাঠানো যাবে না।')}
-      </p>}
-      {purpose === 'signup' && options.data?.otp && !options.data.signup && <p className="notice" role="status">
-        {t('Signup is unavailable until private identity storage is configured.', 'পরিচয়ের তথ্য নিরাপদে সংরক্ষণের ব্যবস্থা হলে নিবন্ধন চালু হবে।')}
-      </p>}
       {options.isError && <p className="error" role="alert">{t('Could not load sign-in options.', 'প্রবেশের বিকল্পগুলো লোড হয়নি।')} <button onClick={() => void options.refetch()}>{t('Retry', 'আবার চেষ্টা')}</button></p>}
       <form onSubmit={submit} className="account-fields">
         {purpose === 'signup' && <>
@@ -182,7 +189,7 @@ export function AccountAccess({locale, marketplace = false}: {locale: Locale; ma
             setError('');
           }}
         >
-          <option value="phone">{t('Mobile number', 'মোবাইল নম্বর')}</option>
+          <option value="phone" disabled={options.data?.channels?.sms === false}>{t('Mobile number', 'মোবাইল নম্বর')}</option>
           <option value="email">{t('Email', 'ইমেইল')}</option>
         </select></label>
         {channel === 'phone' ? <label>
@@ -202,14 +209,18 @@ export function AccountAccess({locale, marketplace = false}: {locale: Locale; ma
             placeholder="name@gmail.com"/>
         </label>}
         {verificationId && <>
-          <p role="status">{t('Enter the code sent to your phone or email.', 'ফোন বা ইমেইলে পাঠানো কোডটি লিখুন।')}</p>
+          <p role="status">{t('If your account is eligible, a code has been sent. Enter it below.', 'অ্যাকাউন্টটি উপযুক্ত হলে কোড পাঠানো হয়েছে। নিচে কোডটি লিখুন।')}</p>
           <label>{t('Verification code', 'যাচাই কোড')}<input key={verificationId} name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{4,10}" maxLength={10} required disabled={busy}/></label>
           <button className="text-link" type="button" disabled={busy} onClick={() => {signup.current = undefined; setVerificationId(''); setError('');}}>
             {t('Edit details or request a new code', 'তথ্য বদলান অথবা নতুন কোড চান')}
           </button>
         </>}
-        <button className="btn primary" disabled={busy || !options.data?.otp || purpose === 'signup' && !options.data.signup}>
-          {verificationId ? t('Verify and continue', 'যাচাই করে এগিয়ে যান') : t('Send verification code', 'যাচাই কোড পাঠান')}<ArrowRight size={16}/>
+        {verificationNotice && <p id="verification-availability" className="notice" role="status">{verificationNotice}</p>}
+        <button className="btn primary" aria-describedby={verificationNotice ? 'verification-availability' : undefined}
+          disabled={busy || !channelAvailable || purpose === 'signup' && !options.data?.signup}>
+          {options.isPending ? t('Checking verification…', 'যাচাই সেবা দেখা হচ্ছে…')
+            : verificationNotice || options.isError ? t('Verification unavailable', 'যাচাই চালু নেই')
+              : verificationId ? t('Verify and continue', 'যাচাই করে এগিয়ে যান') : t('Send verification code', 'যাচাই কোড পাঠান')}<ArrowRight size={16}/>
         </button>
       </form>
       {error && <p className="error" role="alert">{error}</p>}

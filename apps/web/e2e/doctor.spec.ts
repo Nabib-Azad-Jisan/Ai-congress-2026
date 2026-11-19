@@ -149,3 +149,36 @@ test('photo controls wait for the initial owned plot',async({page,request})=>{
  release();
  await expect(page.getByRole('button',{name:'Choose a photo'})).toBeEnabled();
 });
+
+
+test('vision screens an unlisted crop and shows the evidence without a plot', async ({page, request}) => {
+ const session = await (await request.post(api+'/auth/demo', {data:{}})).json();
+ await page.addInitScript(token => localStorage.setItem('agrosphere-token', token), session.token);
+ await page.route('**/doctor/capabilities', async route => {
+  const capabilities = await (await route.fetch()).json();
+  await route.fulfill({json:{...capabilities, provider:'groq', automatic_crop_detection:true}});
+ });
+ const explanation = 'The exposed flesh shows damage extending beneath the skin.';
+ await page.route('**/doctor/cases', async route => {
+  if (route.request().method() !== 'POST') return route.continue();
+  const form = route.request().postDataBuffer()?.toString('latin1') || '';
+  expect(form).toContain('name="crop"\r\n\r\nauto');
+  expect(form).not.toContain('name="plot_id"');
+  await route.fulfill({json:{
+   crop:'auto', classification:{top_label:'Possible internal decay'}, model:{version:'test-vision'},
+   assessment:{subject:'Potato tuber', outcome:'possible_condition', condition:'Possible internal decay',
+    signs:['Dark patches under the skin.'], explanation, uncertainty:'The cause is unresolved.'},
+   advice:['Check the rest of the batch.']
+  }});
+ });
+ await page.goto('/en/agrodoctor');
+ await expect(page.getByLabel('Screening plot', {exact:true})).toHaveValue(session.plot_id);
+ await page.getByLabel('Screening crop', {exact:true}).selectOption('auto');
+ await expect(page.getByText(/Screening sends this photo to Groq/)).toBeVisible();
+ await page.getByLabel('Upload crop photo', {exact:true}).setInputFiles(photo);
+ await page.getByRole('button', {name:'Screen photo', exact:true}).click();
+ const result = page.getByRole('region', {name:'Screening result'});
+ await expect(result).toContainText('Dark patches under the skin.');
+ await expect(result).toContainText(explanation);
+ await expect(result).toContainText('Screening preview');
+});

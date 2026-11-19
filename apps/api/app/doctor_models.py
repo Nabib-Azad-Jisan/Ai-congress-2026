@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageFilter, ImageStat
+from . import doctor_vision
 from .services import ModelBrokenError
 
 CATALOG = json.loads(Path(__file__).with_name('doctor_catalog.json').read_text(encoding='utf-8'))
@@ -130,11 +131,20 @@ class DoctorRegistry:
 
     def card(self, crop: str = 'tomato') -> dict:
         crop = normalize_crop(crop)
+        if doctor_vision.configured():
+            return {**doctor_vision.model_card(), 'supported_crop_ids': list(CROPS)}
         card = dict(self._bundle(CROPS[crop]['model_id'])['card'])
         card['supported_crop_ids'] = [c['id'] for c in CROPS.values() if c['model_id']==card['model_id']]
         return card
 
     def capabilities(self) -> dict:
+        if doctor_vision.configured():
+            card = doctor_vision.model_card()
+            crops = [{**crop, 'model_id': card['model_id'], 'model_version': card['version'],
+                      'available': True, 'artifact_status': 'configured', 'labels': [],
+                      'has_healthy_class': False, 'limitations': card['limitations']} for crop in CROPS.values()]
+            return {'provider': 'groq', 'crops': crops, 'models': [card],
+                    'limitations': card['limitations'], 'automatic_crop_detection': True}
         cards = {mid:self._bundle(mid)['card'] for mid in CATALOG['models']}
         crops = []
         for crop in CROPS.values():
@@ -145,6 +155,49 @@ class DoctorRegistry:
                 'artifact_status':card['artifact_status'], 'has_healthy_class':healthy,
                 'limitations':[NOTICE]+([] if healthy else ['This crop has no healthy reference class; a healthy plant cannot be ruled in/out.'])})
         return {'crops':crops,'models':list(cards.values()),'limitations':[NOTICE], 'automatic_crop_detection':False}
+
+    def screen_with_vision(self, image: Image.Image, crop: str, part: str, locale: str,
+                           follow_up: Image.Image | None = None) -> dict:
+        bn = locale == 'bn'
+        result = doctor_vision.inspect_photo(image, crop, part, 'Bangla' if bn else 'English', follow_up)
+        assessment = result['assessment']
+        if assessment['outcome'] != 'no_visible_damage' or assessment['part'] != 'leaf':
+            return result
+
+        # A false healthy result can hide a lesion. Only corroborate a negative using a
+        # matching leaf classifier with a healthy class. Never run it on harvested produce.
+        checks = []
+        if crop in CROPS and assessment['crop_match'] == 'match':
+            spec = CATALOG['models'][CROPS[crop]['model_id']]
+            healthy_label = CROPS[crop]['label_prefix'] + '___healthy'
+            if any(label.casefold() == healthy_label.casefold() for label in spec['labels']):
+                try:
+                    for photo in (image, follow_up) if follow_up is not None else (image,):
+                        checks.append(self.infer(photo, crop))
+                except ModelBrokenError:
+                    pass
+        reason = 'unconfirmed_leaf_screen'
+        labels = [check['classification']['top_label'].lower() for check in checks
+                  if not check['classification']['abstained']]
+        if labels:
+            result['cross_check_model'] = checks[0]['model']['version']
+            if len(labels) == (2 if follow_up is not None else 1) and all(label.endswith('___healthy') for label in labels):
+                return result
+            if any(not label.endswith('___healthy') for label in labels):
+                reason = 'model_disagreement'
+        explanation = ('ছবিতে ক্ষতি আছে কি না তা নিশ্চিত করা যায়নি।' if bn else
+                       'The photo does not give enough evidence to rule out leaf damage.')
+        if reason == 'model_disagreement':
+            explanation = ('গ্রক ভিশন স্পষ্ট ক্ষতি শনাক্ত করেনি, কিন্তু পাতার দ্বিতীয় মডেলটি ক্ষতির ইঙ্গিত দিয়েছে।' if bn else
+                           'Groq did not identify clear damage, but the independent leaf classifier flagged a possible lesion.')
+        advice = ['আক্রান্ত অংশ ও পাতার উল্টো পাশের কাছ থেকে পরিষ্কার ছবি তুলুন।' if bn else
+                  'Take a close-up of the affected area and another photo of the underside.']
+        assessment.update(outcome='uncertain', condition=None, distinguishing_sign=None, marker='nonspecific',
+                          pattern='অনিশ্চিত' if bn else 'Uncertain', signs=[], explanation=explanation,
+                          uncertainty='কারণ নির্ধারণ করা যায়নি।' if bn else 'The cause is unresolved.', next_steps=advice)
+        result['classification'].update(top_label='unknown', abstained=True, rejection_reason=reason)
+        result.update(status='unable_to_classify', advice=advice)
+        return result
 
     def infer(self, image: Image.Image, crop: str) -> dict:
         crop = normalize_crop(crop)
