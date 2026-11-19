@@ -13,6 +13,18 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Browser fixtures use example.test. Reserved documentation domains cannot
+# identify a real marketplace contact, even through the normal signup form.
+FIXTURE_EMAIL_DOMAINS = ('example.com', 'example.net', 'example.org', 'test', 'invalid', 'example', 'localhost')
+
+
+def fixture_contact(contact: str) -> bool:
+    if '@' not in contact:
+        return False
+    domain = contact.rsplit('@', 1)[1].lower()
+    return any(domain == reserved or domain.endswith('.' + reserved) for reserved in FIXTURE_EMAIL_DOMAINS)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -28,6 +40,8 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default='farmer', server_default='farmer')
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
+    # Unknown legacy origins are excluded from public marketplace observations.
+    is_demo: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     __table_args__ = (UniqueConstraint('email', name='uq_users_email'), UniqueConstraint('phone', name='uq_users_phone'))
 
 
@@ -123,6 +137,8 @@ def ensure_compat_schema(target_engine) -> None:
                 conn.execute(text('CREATE UNIQUE INDEX uq_users_email ON users (email)'))
         with target_engine.begin() as conn:
             ensure_otp_schema(conn)
+            from .district_evidence_schema import ensure_district_evidence_schema
+            ensure_district_evidence_schema(conn)
     if 'records' in table_names:
         rec_cols = {c['name'] for c in insp.get_columns('records')}
         missing_rec = [

@@ -2,7 +2,8 @@
 from datetime import date
 from decimal import Decimal
 from typing import Annotated,Literal
-from pydantic import AwareDatetime,BaseModel,ConfigDict,Field,model_validator
+from pydantic import AfterValidator,AwareDatetime,BaseModel,ConfigDict,Field,model_validator
+from .district_prices_catalog import canonical_commodity
 
 Money=Annotated[Decimal,Field(ge=0,le=Decimal('999999999'),max_digits=18,decimal_places=2)]
 PositiveMoney=Annotated[Decimal,Field(gt=0,le=Decimal('999999999'),max_digits=18,decimal_places=2)]
@@ -11,6 +12,14 @@ Stock=Annotated[Decimal,Field(ge=0,le=Decimal('999999999'),max_digits=18,decimal
 Unit=Literal['kg','g','piece','bundle','crate']
 Category=Literal['vegetables','fruits','rice_grains','pulses','other']
 Status=Literal['draft','published','paused','out_of_stock','archived']
+
+def normalize_commodity(value: str) -> str:
+    commodity = canonical_commodity(value)
+    if commodity is None:
+        raise ValueError('Choose a supported commodity or leave it unset')
+    return commodity
+
+Commodity = Annotated[str, Field(min_length=1, max_length=60), AfterValidator(normalize_commodity)]
 
 class Command(BaseModel):
     model_config=ConfigDict(extra='forbid',allow_inf_nan=False,str_strip_whitespace=True)
@@ -45,6 +54,7 @@ class ProductCreate(Command):
     farm_id:str
     name:str=Field(min_length=1,max_length=120)
     category:Category
+    commodity:Commodity|None=None
     description:str=Field(default='',max_length=3000)
     price_bdt:PositiveMoney
     unit:Unit
@@ -75,6 +85,7 @@ class ProductPatch(Command):
     name:str|None=None
     farm_id:str|None=None
     category:Category|None=None
+    commodity:Commodity|None=None
     description:str|None=None
     price_bdt:PositiveMoney|None=None
     unit:Unit|None=None

@@ -24,6 +24,8 @@ class Product(Base):
     farmer_id:Mapped[str]=mapped_column(ForeignKey('users.id'),index=True)
     farm_id:Mapped[str|None]=mapped_column(ForeignKey('records.id',ondelete='SET NULL'),nullable=True,index=True)
     name:Mapped[str]=mapped_column(String(120))
+    commodity:Mapped[str|None]=mapped_column(String(60),nullable=True)
+    price_observed_at:Mapped[str|None]=mapped_column(String,nullable=True,index=True)
     description:Mapped[str]=mapped_column(String(3000),default='')
     category:Mapped[str]=mapped_column(String(30))
     price_bdt:Mapped[Decimal]=mapped_column(Numeric(18,2))
@@ -129,6 +131,7 @@ class SellerOrder(Base):
     total_bdt:Mapped[Decimal]=mapped_column(Numeric(18,2))
     destination:Mapped[dict]=mapped_column(JSON)
     expires_at:Mapped[str|None]=mapped_column(String,nullable=True,index=True)
+    confirmed_at:Mapped[str|None]=mapped_column(String,nullable=True,index=True)
     updated_at:Mapped[str]=mapped_column(String,default=now)
 
 class OrderItem(Base):
@@ -137,6 +140,8 @@ class OrderItem(Base):
     seller_order_id:Mapped[str]=mapped_column(ForeignKey('market_seller_orders.id'),index=True)
     product_id:Mapped[str]=mapped_column(ForeignKey('market_products.id'),index=True)
     name:Mapped[str]=mapped_column(String(120))
+    commodity:Mapped[str|None]=mapped_column(String(60),nullable=True)
+    district:Mapped[str|None]=mapped_column(String(80),nullable=True)
     unit:Mapped[str]=mapped_column(String(15))
     quantity:Mapped[Decimal]=mapped_column(Numeric(18,3))
     unit_price_bdt:Mapped[Decimal]=mapped_column(Numeric(18,2))

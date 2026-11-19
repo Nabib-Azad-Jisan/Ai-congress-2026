@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .db import SignupIdentity, User, get_db
+from .db import SignupIdentity, User, fixture_contact, get_db
 from .email_otp import smtp_ready, start_email, consume_email
 from .market_auth import AuthLimiter, _DUMMY_HASH, hash_password, issue_session, limit_auth, normalize_email, verify_password
 
@@ -271,7 +271,7 @@ def verify(body: Verify, request: Request, response: Response, db: Session = Dep
             raise invalid
     try:
         if profile is not None:
-            account = User(name=profile.name, age=profile.age, role=profile.role,
+            account = User(name=profile.name, age=profile.age, role=profile.role, is_demo=fixture_contact(body.contact),
                            email=body.contact if '@' in body.contact else None,
                            phone=body.contact if '@' not in body.contact else None,
                            password_hash=hash_password(profile.password.get_secret_value()))

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .db import Token, User, get_db
+from .db import Token, User, fixture_contact, get_db
 from .identity import user_view
 
 router = APIRouter(prefix='/api/v1/auth', tags=['authentication'])
@@ -135,7 +135,7 @@ def register(body: Registration, request: Request, db: Session = Depends(get_db)
     if db.scalar(select(User.id).where(User.email == body.email)):
         raise HTTPException(409, 'An account already uses this email')
     user = User(name=body.name, email=body.email, password_hash=hash_password(body.password),
-                role=body.role, is_active=True,
+                role=body.role, is_active=True, is_demo=fixture_contact(body.email),
                 preferences={'language': 'en', 'theme': 'light', 'retraining_consent': False, 'selected_plot_id': None})
     try:
         db.add(user)

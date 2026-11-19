@@ -37,6 +37,8 @@ from .rescue import router as rescue_router
 from . import market_models, market_service
 from .db import Base, Reading, Record, SignupIdentity, Token, User, engine, ensure_compat_schema, get_db, now
 from . import doctor_vision, farmer_chat
+from . import district_prices
+from .district_prices_catalog import COMMODITY_OPTIONS
 from .doctor_context import FarmerContext
 from .doctor_photos import case_photo_paths, decode_photo, read_upload
 from .doctor_models import CROPS, DoctorRegistry, normalize_crop
@@ -493,6 +495,7 @@ def login(body: DemoLogin, db: Db):
         raise HTTPException(404, 'Demo sign-in is disabled')
     user = User(
         name=body.name,
+        is_demo=True,
         preferences={'language': 'en', 'theme': 'light', 'retraining_consent': False, 'selected_plot_id': None},
     )
     db.add(user)
@@ -1936,6 +1939,26 @@ def _chat_quotes(owner_id, crop, trade_type, market, observed_on):
              'source':q['meta'].get('source_name'),'freshness':q['meta'].get('freshness')} for q in quotes]
 
 
+@app.get('/api/v1/market/district-prices/crops')
+def district_price_crops():
+    return {'items': COMMODITY_OPTIONS}
+
+
+@app.get('/api/v1/market/district-prices')
+def district_price_board(db: Db, crop: Annotated[str, Query(min_length=1,max_length=100)],
+                         district: Annotated[str, Query(min_length=1,max_length=80)],
+                         unit: Literal['kg','g','piece','bundle','crate']='kg'):
+    try:
+        return district_prices.board(db,crop,district,unit)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
+
+def _chat_district_board(crop, district, unit):
+    with DBSession(engine) as tx:
+        return district_prices.board(tx,crop,district,unit)
+
+
 def _chat_response(thread):
     return {'conversation_id':thread.id, 'messages':thread.payload['messages']}
 
@@ -1989,7 +2012,7 @@ def farmer_message(body: farmer_chat.ChatInput, user: Farmer, db: Db, request: R
     farm_id = plot.farm_id if plot else None
     db.commit()
     message, new_state = farmer_chat.make_turn(body.message,body.locale,history,state,snapshot,
-        quote_lookup=lambda *filters: _chat_quotes(user.id,*filters))
+        quote_lookup=lambda *filters: _chat_quotes(user.id,*filters), board_lookup=_chat_district_board)
     with market_service.transaction() as tx:
         actor = market_service.actor(tx,user,roles={'farmer'})
         _chat_scope(tx,actor,plot_id,body.case_id)

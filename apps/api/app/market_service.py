@@ -7,6 +7,7 @@ from decimal import Decimal,ROUND_HALF_UP
 from fastapi import HTTPException
 from sqlalchemy import delete,func,or_,select,text
 from .db import Session,User,Record,now
+from .district_prices_catalog import canonical_commodity
 from .market_models import Address,Auction,Audit,Bid,CartItem,Favorite,Idempotency,Notification,Order,OrderItem,PaymentRecord,Policy,Product,ProductImage,Profile,Report,Review,SellerOrder
 
 NOTICE='Prototype marketplace. No online payment is processed. Cash/fulfillment records are user reports, not independent verification.'
@@ -61,6 +62,19 @@ def profile_view(row,user=None):
     return data
 def address_view(row):
     return {k:getattr(row,k) for k in ['id','name','phone','line1','district','area','country','created_at']}|{'latitude':str(row.latitude) if row.latitude is not None else None,'longitude':str(row.longitude) if row.longitude is not None else None}
+
+def asking_terms(p):
+    return (p.commodity or canonical_commodity(p.name), p.unit, p.price_bdt)
+
+def observe_asking_price(p, current):
+    """Record when these terms reach the public catalog, including scheduled release."""
+    if p.moderation_status == 'hidden':
+        p.price_observed_at = None
+        return
+    observed = current
+    if p.available_from and p.available_from > current.date().isoformat():
+        observed = datetime.fromisoformat(p.available_from).replace(tzinfo=timezone.utc)
+    p.price_observed_at = stamp(observed)
 def distance_km(lat1,lon1,lat2,lon2):
     a,b,c,d=map(math.radians,map(float,[lat1,lon1,lat2,lon2]));x=math.sin((c-a)/2)**2+math.cos(a)*math.cos(c)*math.sin((d-b)/2)**2
     return 6371.0088*2*math.asin(math.sqrt(min(1,max(0,x))))
@@ -107,7 +121,7 @@ def product_view(db,p,user=None,lat=None,lon=None,include_auction=True,ratings=N
     seller=db.get(User,p.farmer_id);pr=db.get(Profile,p.farmer_id)
     images=list(db.scalars(select(ProductImage).where(ProductImage.product_id==p.id).order_by(ProductImage.created_at)))
     distance=distance_km(lat,lon,p.latitude,p.longitude) if lat is not None and lon is not None and p.latitude is not None and p.longitude is not None else None
-    data={k:getattr(p,k) for k in ['id','farmer_id','farm_id','name','description','category','unit','district','area','pickup_enabled','delivery_enabled','nationwide_delivery','delivery_districts','harvest_date','available_from','moderation_status','version','created_at','updated_at']}
+    data={k:getattr(p,k) for k in ['id','farmer_id','farm_id','name','description','category','commodity','unit','district','area','pickup_enabled','delivery_enabled','nationwide_delivery','delivery_districts','harvest_date','available_from','moderation_status','version','created_at','updated_at']}
     data.update(seller_name=pr.public_name if pr else seller.name if seller else 'Archived farmer',seller_verification=pr.verification_status if pr else 'unverified',price_bdt=m(p.price_bdt),currency='BDT',quantity_step=q(p.quantity_step),stock_quantity=q(p.stock_quantity),auction_reserved=q(p.auction_reserved),minimum_order_quantity=q(p.minimum_order_quantity) if p.minimum_order_quantity is not None else None,maximum_order_quantity=q(p.maximum_order_quantity) if p.maximum_order_quantity is not None else None,delivery_fee_bdt=m(p.delivery_fee_bdt),status='out_of_stock' if p.status=='published' and p.stock_quantity==0 else p.status,images=[{'id':i.id,'url':f'/api/v1/market/products/{p.id}/images/{i.id}'} for i in images if i.filename.endswith('.jpg')],videos=[{'id':i.id,'url':f'/api/v1/market/products/{p.id}/images/{i.id}'} for i in images if i.filename.endswith(('.mp4','.webm'))],distance_km=round(distance,1) if distance is not None else None,nearby=distance<=20 if distance is not None else False,distance_notice='Approximate geographic distance to a coarse farm location; not road distance or delivery eligibility.',available=listing_eligible(db,p) and p.stock_quantity>0)
     if ratings is None:
         ratings=seller_ratings(db,[p.farmer_id])
@@ -222,7 +236,11 @@ def create_order(db,user,address,lines,fulfillment,auction=None):
         so=SellerOrder(order_id=order.id,farmer_id=farmer,farm_id=farm,fulfillment=method,subtotal_bdt=subtotal,delivery_fee_bdt=fee,total_bdt=subtotal+fee,destination=destination,expires_at=stamp(clock()+timedelta(hours=policy(db)['order_acceptance_hours'])))
         db.add(so);db.flush();order.total_bdt+=so.total_bdt
         for p,quantity,line in items:
-            db.add(OrderItem(seller_order_id=so.id,product_id=p.id,name=p.name,unit=p.unit,quantity=quantity,unit_price_bdt=money(line/quantity),line_total_bdt=line))
+            db.add(OrderItem(
+                seller_order_id=so.id, product_id=p.id, name=p.name, unit=p.unit, quantity=quantity,
+                commodity=p.commodity or canonical_commodity(p.name), district=p.district,
+                unit_price_bdt=money(line/quantity), line_total_bdt=line,
+            ))
             if auction:p.auction_reserved-=quantity;auction.reserved=False
             else:p.stock_quantity-=quantity
             p.version+=1;p.updated_at=stamp(clock())

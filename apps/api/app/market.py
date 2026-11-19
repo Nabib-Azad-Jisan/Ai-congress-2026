@@ -115,6 +115,8 @@ def create_product(body:ProductCreate,user:Who):
         if lat is None and farm.payload.get('location_consent') and farm.payload.get('latitude') is not None:
             lat=Decimal(str(farm.payload['latitude'])).quantize(Decimal('.01'));lon=Decimal(str(farm.payload['longitude'])).quantize(Decimal('.01'))
         row=Product(farmer_id=u.id,district=p.district or farm.payload['district'],area=p.area or farm.payload.get('location_name',''),latitude=lat,longitude=lon,**data)
+        if row.status == 'published':
+            s.observe_asking_price(row, s.clock())
         db.add(row);db.flush();s.audit(db,u,'product.created','product',row.id);return s.product_view(db,row,u)
 
 @router.get('/market/products/{id}')
@@ -135,8 +137,17 @@ def edit_product(id:str,body:ProductPatch,user:Who):
         except ValidationError as exc:s.fail(422,str(exc))
         validate_farm(db,validated.farm_id,user)
         if validated.status=='published' and s.policy(db)['require_verified_farmer'] and s.profile(db,user).verification_status!='verified':s.fail(403,'Verified farmer required')
+        was_published = p.status == 'published'
+        previous_terms = s.asking_terms(p)
+        previous_start = p.available_from
         for k in updates:
             value=getattr(validated,k);setattr(p,k,value.isoformat() if k in ['harvest_date','available_from'] and value is not None else value)
+        current = s.clock()
+        scheduled_changed = previous_start != p.available_from and any(
+            start and start > current.date().isoformat() for start in (previous_start, p.available_from)
+        )
+        if p.status == 'published' and (not was_published or previous_terms != s.asking_terms(p) or scheduled_changed):
+            s.observe_asking_price(p, current)
         p.version+=1;p.updated_at=s.stamp(s.clock());s.tick(db);s.audit(db,user,'product.updated','product',p.id);db.flush();return s.product_view(db,p,user)
 
 @router.post('/market/products/{id}/images')
@@ -279,6 +290,8 @@ def fulfill(id:str,body:SellerUpdate,user:Who):
             if transitions.get(row.status)!=body.status:s.fail(409,'Invalid fulfillment status transition')
             if body.cash_received and body.status!='delivered':s.fail(422,'Record cash only with delivered fulfillment')
             row.status=body.status;row.expires_at=s.stamp(s.clock()+timedelta(days=7)) if row.status=='ready_for_pickup' else None;row.updated_at=s.stamp(s.clock())
+            if body.status == 'confirmed' and row.confirmed_at is None:
+                row.confirmed_at = row.updated_at
             if body.cash_received:
                 row.payment_status='cash_recorded';db.add(PaymentRecord(seller_order_id=id,actor_id=u.id,status='cash_recorded',amount_bdt=row.total_bdt))
             o=db.get(Order,row.order_id);s.notify(db,o.customer_id,'Order '+body.status.replace('_',' '),'order',o.id);s.audit(db,u,'order.status_changed','seller_order',id,status=row.status,cash_reported=body.cash_received)
@@ -478,7 +491,11 @@ def moderate_product(id:str,body:ProductModeration,user:Who):
     with s.transaction() as db:
         u=s.actor(db,user,['admin']);p=db.get(Product,id)
         if not p:s.fail(404,'Product not found')
-        p.moderation_status=body.moderation_status;p.version+=1;s.tick(db);s.audit(db,u,'product.moderated','product',id,status=body.moderation_status,reason=body.reason);s.notify(db,p.farmer_id,'Listing moderation updated','product',id,body.reason);return s.product_view(db,p,u)
+        was_hidden = p.moderation_status == 'hidden'
+        p.moderation_status=body.moderation_status
+        if was_hidden and p.moderation_status == 'visible' and p.status == 'published' and p.price_observed_at is None:
+            s.observe_asking_price(p, s.clock())
+        p.version+=1;s.tick(db);s.audit(db,u,'product.moderated','product',id,status=body.moderation_status,reason=body.reason);s.notify(db,p.farmer_id,'Listing moderation updated','product',id,body.reason);return s.product_view(db,p,u)
 @router.patch('/admin/market/reports/{id}')
 def resolve_report(id:str,body:ResolveReport,user:Who):
     with s.transaction() as db:
