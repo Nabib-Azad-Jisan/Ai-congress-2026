@@ -13,6 +13,7 @@ import httpx
 from pydantic import BaseModel, StringConstraints
 
 from .farmer_chat_market import calculate_market_turn
+from .district_price_chat import district_market_turn
 from .farmer_chat_sources import collect_sources
 from .services import OpenMeteoProvider, preparedness
 
@@ -43,6 +44,10 @@ crop and district (English names when the farmer explicitly names them or clearl
 earlier question about that same crop/place, else null; preserve rice season e.g. Aman rice).
 For market questions include current_price (true when seeking today's or latest price), trade_type
 (wholesale, retail, farm-gate or null), and market_name (a specific named market or null).
+Set district_board=true for KrishiMarket asking/listing or agreed/confirmed order prices, a local
+marketplace price or a single buyer offer compared with recent district sales. Set it false for
+official wholesale/retail reports, two-buyer net calculations or quotes from private farm records.
+board_unit may be kg, g, piece, bundle or crate when explicit. District means the seller's district.
 For irrigation, set personal_timing false for a purely educational question, otherwise true.
 Return root_soil and last_water only as exact quotes of the farmer's own relevant observations
 from this question or earlier user messages. root_soil must describe moisture at root depth
@@ -120,7 +125,7 @@ def fallback_topic(question, last):
     words = question.casefold()
     for topic, phrases in (
         ('handoff', ('adviser', 'advisor', 'officer', '16123', 'কর্মকর্তা', 'বিশেষজ্ঞ', 'কল সেন্টার')),
-        ('market', ('buyer', 'market', 'price', 'transport', 'quote', 'bazar', 'bajar', 'bhara', 'vara', 'দাম', '৳', 'ক্রেতা', 'বাজার', 'ভাড়া','ভাড়া')),
+        ('market', ('buyer', 'market', 'price', 'transport', 'quote', 'bazar', 'bajar', 'dam koto', 'bhara', 'vara', 'দাম', '৳', 'ক্রেতা', 'বাজার','অর্ডার','টাকা','বাজারদর','ভাড়া','ভাড়া')),
         ('briefing', ('brief', 'open task', 'my tasks', 'today’s work', "today's work", 'আজকের কাজ', 'কী কাজ')),
         ('irrigation', ('irrigat', 'water my', 'soil moisture', 'সেচ', 'পানি দেব')),
         ('weather', ('rain', 'weather', 'forecast', 'বৃষ্টি', 'আবহাওয়া')),
@@ -186,7 +191,7 @@ def unsupported_crop_advice(text):
     return bool(re.search(r'\d\s*(?:%|percent|শতাংশ)|শতকরা|fungicide|pesticide|insecticide|herbicide|bactericide|spray\s+\w+icide|বালাইনাশক|কীটনাশক|ছত্রাকনাশক|আগাছানাশক',text,re.I))
 
 
-def make_turn(question, locale, history, state, context, quote_lookup=None):
+def make_turn(question, locale, history, state, context, quote_lookup=None, board_lookup=None):
     recent = [dict(role=m['role'], text=m['text'][:720]) for m in history[-6:]]
     plan = groq_json(ROUTE, dict(question=question, history=recent, locale=locale,
                                  previous_topic=state.get('topic')), 380)
@@ -194,7 +199,12 @@ def make_turn(question, locale, history, state, context, quote_lookup=None):
     if not isinstance(topic, str) or topic not in TOPICS:
         topic = fallback_topic(question, state.get('topic'))
     lang = plan.get('language') if plan.get('language') in ('en', 'bn') else (
-        'bn' if re.search('[\u0980-\u09ff]', question) else locale)
+        'bn' if re.search('[অ-হড়-য়]', question) else locale)
+    # A taka-denominated English question can be misclassified as Bengali.
+    if (topic == 'market' and locale == 'en' and lang == 'bn'
+            and not re.search(r'[অ-হড়-য়]|\b(?:bangla|bengali|banglish)\b', question, re.I)
+            and re.search(r'\b(?:how (?:does|do|much)|what (?:is|would|are)|i (?:can|have)|a buyer offered)\b', question, re.I)):
+        lang = 'en'
     bn = lang == 'bn'
     def t(en, bengali):
         return bengali if bn else en
@@ -240,6 +250,18 @@ def make_turn(question, locale, history, state, context, quote_lookup=None):
         record('case', t('AgroDoctor screening','অ্যাগ্রোডক্টরের পরীক্ষা'), details,
                f"{details.get('crop','')} · {details.get('created_at','')[:10]}")
     if topic == 'market':
+        prior_board = state.get('district_prices', {}) if state.get('topic')=='market' else {}
+        district_turn = district_market_turn(question, plan, prior_board, plot.get('crop',''),
+                                             context.get('district',''), lang, board_lookup)
+        if district_turn:
+            result, scope, source = district_turn
+            new_state.pop('market', None)
+            new_state['district_prices'] = scope
+            if source:
+                record('district_prices',t('KrishiMarket district price board','কৃষিমার্কেট জেলার বাজারদর'),{},source)
+                action('navigate','/agrorescue','Open harvest planner','ফসল বিক্রির পরিকল্পনা')
+            return output(result,'tool',['district_prices'])
+        new_state.pop('district_prices',None)
         slots = plan.get('slots') if isinstance(plan.get('slots'), dict) else None
         calc = calculate_market_turn(question, state.get('market', {}), lang, slots)
         if calc:
