@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import threading
@@ -20,6 +21,7 @@ MAX_PRICE_BDT_PER_KG = Decimal('100000.00')
 MIN_PRICE_BDT_PER_KG = Decimal('0.01')
 MAX_HARVEST_KG = Decimal('1000000')
 MAX_COST_BDT = Decimal('100000000.00')
+FFWC_URL = 'https://www.ffwc.gov.bd/'
 REQUIRED_CSV_COLUMNS = ('market', 'commodity', 'price', 'unit', 'price_type', 'grade', 'observed_at')
 SUPPORTED_PRICE_TYPES = ('wholesale', 'retail', 'farm-gate')
 MEASUREMENT_UNITS = {
@@ -154,19 +156,12 @@ class OpenMeteoProvider:
             timeout=12,
         )
         r.raise_for_status()
-        data = r.json()
-        now_dt = current_utc()
-        hourly = [
-            dict(time=t + '+00:00' if '+' not in t and not t.endswith('Z') else t, rain_mm=v)
-            for t, v in zip(data['hourly']['time'], data['hourly']['precipitation'])
-            if datetime.fromisoformat(t.replace('Z', '+00:00')).replace(tzinfo=timezone.utc) >= now_dt.replace(minute=0, second=0, microsecond=0)
-        ]
-        if len(hourly) < 72 or any(x['rain_mm'] is None or x['rain_mm'] < 0 for x in hourly[:72]):
+        start = current_utc().replace(minute=0, second=0, microsecond=0)
+        selected = _open_meteo_intervals(r.json(), start)
+        if not selected:
             raise ValueError('Incomplete forecast')
-        selected = hourly[:72]
-        v_from = selected[0]['time']
-        last_dt = parse_iso_utc(selected[-1]['time']) or now_dt
-        v_until = (last_dt + timedelta(hours=1)).isoformat()
+        v_from = start.isoformat()
+        v_until = (start + timedelta(hours=len(selected))).isoformat()
         meta = provenance(
             'LIVE',
             'Open-Meteo',
@@ -190,10 +185,41 @@ class OpenMeteoProvider:
         )
 
 
+def _open_meteo_intervals(data: dict, start: datetime) -> list[dict]:
+    """Return complete intervals from the start of the current forecast hour."""
+    hourly = data.get('hourly') if isinstance(data, dict) else None
+    units = data.get('hourly_units') if isinstance(data, dict) else None
+    if not isinstance(hourly, dict) or not isinstance(units, dict) or units.get('precipitation') != 'mm':
+        raise ValueError('Expected hourly precipitation in millimetres')
+    times, amounts = hourly.get('time'), hourly.get('precipitation')
+    if not isinstance(times, list) or not isinstance(amounts, list) or len(times) != len(amounts):
+        raise ValueError('Incomplete hourly time and precipitation arrays')
+
+    # Open-Meteo timestamps the END of the preceding accumulation interval.
+    # Duplicate or missing endpoints cannot stand in for another forecast hour.
+    by_end = {}
+    for raw_time, amount in zip(times, amounts):
+        end = parse_iso_utc(raw_time) if isinstance(raw_time, str) else None
+        if end is None:
+            raise ValueError('Invalid forecast timestamp')
+        by_end[end] = None if end in by_end else amount
+
+    intervals = []
+    for index in range(72):
+        interval_start = start + timedelta(hours=index)
+        amount = by_end.get(interval_start + timedelta(hours=1))
+        if type(amount) not in (int, float) or amount < 0 or not math.isfinite(amount):
+            break
+        intervals.append(dict(time=interval_start.isoformat(), rain_mm=amount))
+    return intervals
+
+
 def preparedness(forecast: dict[str, Any], horizon: int = 48, low_lying: bool = False) -> dict[str, Any]:
     if horizon not in (24, 48, 72):
         raise ValueError('Use 24, 48 or 72 hours')
     hourly = forecast['hourly']
+    if len(hourly) < horizon:
+        raise ValueError('Incomplete rainfall data for the requested horizon')
     total = round(sum(x['rain_mm'] for x in hourly[:horizon]), 1)
     threshold = 50 if low_lying else 75
     v_from = forecast.get('valid_from') or (hourly[0]['time'] if hourly else None)
@@ -225,7 +251,7 @@ def preparedness(forecast: dict[str, Any], horizon: int = 48, low_lying: bool = 
         ],
         disclaimer='Rain preparedness only. Not an official flood warning or farm inundation forecast.',
         official_alert=None,
-        official_url='https://ww2.ffwc.gov.bd/',
+        official_url=FFWC_URL,
     )
     return compute_effective_weather(result)
 
@@ -248,6 +274,11 @@ def compute_effective_weather(payload: dict[str, Any], now_dt: datetime | None =
 
     retrieved_dt = parse_iso_utc(meta.get('retrieved_at'))
     until_dt = parse_iso_utc(v_until)
+    horizon_end = parse_iso_utc(out.get('horizon_valid_until'))
+    if horizon_end is None and 0 < horizon <= len(hourly):
+        last_slot = parse_iso_utc(hourly[horizon - 1].get('time'))
+        if last_slot is not None:
+            horizon_end = last_slot + timedelta(hours=1)
 
     future_slots = [
         h for h in hourly
@@ -255,7 +286,7 @@ def compute_effective_weather(payload: dict[str, Any], now_dt: datetime | None =
     ]
 
     is_expired = False
-    if until_dt is not None and until_dt <= ref_now:
+    if any(end is not None and end <= ref_now for end in (until_dt, horizon_end)):
         is_expired = True
     elif hourly and len(future_slots) == 0:
         is_expired = True
@@ -267,8 +298,10 @@ def compute_effective_weather(payload: dict[str, Any], now_dt: datetime | None =
             flags.append('forecast_window_expired')
     elif is_sim:
         meta['freshness'] = 'not_applicable'
+    elif retrieved_dt is None or retrieved_dt > ref_now or until_dt is None:
+        meta['freshness'] = 'unknown'
     else:
-        age_hours = ((ref_now - retrieved_dt).total_seconds() / 3600.0) if retrieved_dt else 0.0
+        age_hours = (ref_now - retrieved_dt).total_seconds() / 3600.0
         if age_hours > 6.0 or len(future_slots) < min(horizon, len(hourly)):
             meta['freshness'] = 'stale'
             if 'forecast_stale_refresh_recommended' not in flags:

@@ -826,7 +826,7 @@ These are candidate references **not proof that all APIs, datasets or automated 
    *Controlled leaf images; confirm dataset license and image usage.*
 2. **Open-Meteo API docs:** https://open-meteo.com/en/docs  
    *Hourly forecasts include precipitation and weather variables; check use limits and commercial terms.*
-3. **Bangladesh Water Development Board Flood Forecasting & Warning Centre (FFWC):** https://ww2.ffwc.gov.bd/  
+3. **Bangladesh Water Development Board Flood Forecasting & Warning Centre (FFWC):** https://www.ffwc.gov.bd/
    About official service: https://ffwc.gov.bd/app/about/about-us  
    *Treat these as authoritative information channels, not automatically authorized scrape endpoints.*
 4. **Copernicus GloFAS:** https://global-flood.emergency.copernicus.eu/general-information/about-glofas/  

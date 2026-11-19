@@ -103,6 +103,7 @@ export type DoctorScreening = {
   plot_name?: string | null;
   status: string;
   save_notice?: 'plot_crop_unconfirmed';
+  fallback_reason?: 'vision_unavailable';
   assessment?: {
     outcome: 'possible_condition' | 'no_visible_damage' | 'uncertain' | 'unrelated';
     subject: string;
@@ -113,6 +114,7 @@ export type DoctorScreening = {
     crop_match?: 'match' | 'mismatch' | 'unknown';
     pattern?: string;
     distinguishing_sign?: string | null;
+    field_check?: {possible_explanation: string; next_check: string; source_url: string} | null;
     signs: string[];
     explanation: string;
     uncertainty: string;
@@ -125,6 +127,7 @@ export type DoctorScreening = {
     score: number | null;
     score_type: string;
     alternatives: {label: string; score: number}[];
+    pattern_hint?: 'blight_like';
     selected_crop_options?: {label: string; score: number}[];
     ood_notice?: string | null;
     rejection_reason?: string | null;
@@ -210,6 +213,7 @@ export type Weather = {
   reasons: string[];
   disclaimer: string;
   location: {lat: number; lon: number};
+  horizon_valid_until?: string | null;
   valid_from?: string | null;
   valid_until?: string | null;
   is_expired?: boolean;

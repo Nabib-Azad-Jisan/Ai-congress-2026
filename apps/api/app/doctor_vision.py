@@ -2,12 +2,15 @@
 import base64
 import io
 import os
+from time import monotonic, sleep
 from typing import Annotated, Literal
 
 import httpx
 from fastapi import HTTPException
 from PIL import Image
-from pydantic import BaseModel, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, Field, StringConstraints
+
+from .doctor_patterns import visual_guidance
 
 SOURCE = 'https://console.groq.com/docs/vision'
 LIMIT = 'A photo can suggest a condition. Confirm the cause with field observations or an agricultural extension officer.'
@@ -19,13 +22,14 @@ class Assessment(BaseModel):
     subject: Text
     part: Literal['leaf', 'produce', 'other', 'unknown']
     produce_finding: Literal['surface_mold', 'internal_breakdown', 'sunken_or_shriveled',
-                            'bruise_or_wound', 'discoloration', 'other'] | None
+                            'bruise_or_wound', 'discoloration', 'other'] | None = None
     crop_match: Literal['match', 'mismatch', 'unknown']
     pattern: Text
+    visible_features: list[Text] = Field(default_factory=list)
     marker: Literal['concentric_rings', 'surface_growth', 'pustules', 'insect_or_mine',
                     'fruiting_bodies', 'distinct_damage_distribution', 'nonspecific']
-    distinguishing_sign: Text | None
-    condition: Text | None
+    distinguishing_sign: Text | None = None
+    condition: Text | None = None
     signs: list[Text] = Field(min_length=1, max_length=4)
     explanation: Text
     uncertainty: Text
@@ -53,6 +57,7 @@ produce_finding: for damaged produce, classify the visible problem as surface_mo
 sunken_or_shriveled, bruise_or_wound, discoloration or other. Otherwise null. For produce describe the type
 of deterioration only; do not name a pathogen or infer firmness. Internal patches of damaged flesh can be
 reported as internal_breakdown even when the cause is unknown.
+visible_features: list only the supplied feature IDs whose descriptions you can actually see. Otherwise return [].
 pattern: short heading of 3 to 10 words describing visible damage without naming an organism.
 marker: choose exactly one visually supported marker from concentric_rings, surface_growth, pustules,
 insect_or_mine, fruiting_bodies, distinct_damage_distribution, nonspecific. Use distinct_damage_distribution
@@ -144,6 +149,52 @@ def _paired_view(original: Image.Image, follow_up: Image.Image) -> tuple[Image.I
     return combined, order
 
 
+def _request_assessment(payload: dict) -> Assessment:
+    """Allow one recovery attempt within the original time budget."""
+    deadline = monotonic() + 45
+    headers = {'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY'].strip()}
+    for attempt in range(2):
+        remaining = max(0.1, deadline - monotonic())
+        try:
+            response = httpx.post('https://api.groq.com/openai/v1/chat/completions',
+                                  headers=headers, json=payload, timeout=httpx.Timeout(remaining, connect=min(8, remaining)))
+        except httpx.TransportError as exc:
+            failure = HTTPException(503, 'Could not reach Groq vision. Please try again shortly.')
+            failure.__cause__ = exc
+        else:
+            if response.status_code == 429:
+                delay = response.headers.get('retry-after', '')
+                if delay.isascii() and delay.isdecimal() and len(delay) <= 6:
+                    raise HTTPException(429, f'Groq vision is busy. Try again in {delay} seconds.', headers={'Retry-After': delay})
+                raise HTTPException(429, 'Groq vision has reached its usage limit. Please try again later.')
+            if response.status_code == 200:
+                try:
+                    choice = response.json()['choices'][0]
+                    return Assessment.model_validate_json(choice['message']['content'])
+                except (KeyError, IndexError, TypeError, ValueError):
+                    failure = HTTPException(502, 'Groq returned an incomplete assessment. Please try the photo again.')
+            elif response.status_code == 400:
+                # JSON mode can reject the model's generation before returning a completion.
+                try:
+                    code = response.json()['error']['code']
+                except (KeyError, TypeError, ValueError):
+                    code = None
+                if code != 'json_validate_failed':
+                    raise HTTPException(503, 'Groq rejected the vision request. Check the configured model.')
+                failure = HTTPException(502, 'Groq returned an incomplete assessment. Please try the photo again.')
+            elif response.status_code in (408, 500, 502, 503, 504):
+                failure = HTTPException(503, 'Groq vision is temporarily unavailable. Please try again shortly.')
+            else:
+                raise HTTPException(503, 'Groq vision is unavailable. Check the server credential and model access.')
+        if attempt or deadline - monotonic() < 2:
+            raise failure
+        if failure.status_code == 502:
+            # Partial JSON (especially longer Bangla answers) needs room to finish.
+            payload = {**payload, 'max_completion_tokens': 1000}
+        else:
+            sleep(0.3)
+
+
 def inspect_photo(image: Image.Image, crop: str, part: str, language: str,
                   follow_up: Image.Image | None = None) -> dict:
     card = model_card()
@@ -160,36 +211,25 @@ def inspect_photo(image: Image.Image, crop: str, part: str, language: str,
     output = io.BytesIO()
     scaled.save(output, 'JPEG', quality=86)
     encoded = base64.b64encode(output.getvalue()).decode('ascii')
+    instructions = INSTRUCTIONS
+    if crop == 'potato' and part != 'other':
+        instructions += '\n\n' + POTATO_FOLIAGE
+    guidance = visual_guidance(crop, part)
+    if guidance:
+        instructions += '\n\n' + guidance
     payload = {
         'model': card['version'], 'temperature': 0.1, 'reasoning_effort': 'none',
         'max_completion_tokens': 800 if language == 'Bangla' else 500,
         'response_format': {'type': 'json_object'},
         'messages': [
-            {'role': 'system', 'content': INSTRUCTIONS + ('\n\n' + POTATO_FOLIAGE if crop == 'potato' and part != 'other' else '')},
+            {'role': 'system', 'content': instructions},
             {'role': 'user', 'content': [
                 {'type': 'text', 'text': prompt},
                 {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + encoded}},
             ]},
         ],
     }
-    try:
-        response = httpx.post('https://api.groq.com/openai/v1/chat/completions',
-                              headers={'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY'].strip()},
-                              json=payload, timeout=httpx.Timeout(45, connect=8))
-    except httpx.RequestError as exc:
-        raise HTTPException(503, 'Could not reach Groq vision. Please try again shortly.') from exc
-    if response.status_code == 429:
-        delay = response.headers.get('retry-after', '')
-        if delay.isascii() and delay.isdecimal() and len(delay) <= 6:
-            raise HTTPException(429, f'Groq vision is busy. Try again in {delay} seconds.', headers={'Retry-After': delay})
-        raise HTTPException(429, 'Groq vision has reached its usage limit. Please try again later.')
-    if response.status_code != 200:
-        raise HTTPException(503, 'Groq vision is unavailable. Check the server credential and model access or try again later.')
-    try:
-        content = response.json()['choices'][0]['message']['content']
-        result = Assessment.model_validate_json(content)
-    except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
-        raise HTTPException(502, 'Groq returned an incomplete assessment. Please try the photo again.') from exc
+    result = _request_assessment(payload)
 
     if result.outcome == 'possible_condition' and result.marker == 'nonspecific':
         result.distinguishing_sign = None
