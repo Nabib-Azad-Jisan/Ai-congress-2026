@@ -76,7 +76,7 @@ export async function verifyDeployment(
   }={},
 ){
   const api=backendUrl(env.NEXT_PUBLIC_API_URL);
-  const origin=env.DEPLOY_PRIME_URL||env.URL;
+  const origin=env.CONTEXT==='production' ? env.URL||env.DEPLOY_PRIME_URL : env.DEPLOY_PRIME_URL||env.URL;
   const host=new URL(api).hostname;
 
   // DNS special-use check for hostnames (OP-04). Literal IPs already rejected in backendUrl.
